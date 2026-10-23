@@ -9,6 +9,7 @@
 //   {ifExists: path, then: Step[], else?: Step[]}
 //   {callTool: {name, args}}               call a tool on the "ladvin" MCP server from --mcp-config
 //   {exit: number}
+//   ("$INPUT" in the main script is the first user message)
 //   {respond: Step[]}                      after the script, run these for every further stdin line, with "$INPUT"
 //                                          replaced by that message text; a result is emitted if the steps emit none
 // After the script: stays alive until stdin closes, then exits 0 (like real claude).
@@ -69,10 +70,19 @@ async function mcp(): Promise<Client> {
 let resultEmitted = false;
 let respondSteps: any[] | null = null;
 
+function inputText(line: string): string {
+  try {
+    return String(JSON.parse(line).message?.content ?? line);
+  } catch {
+    return line;
+  }
+}
+
 function subst(v: any, input: string): any {
   if (typeof v === "string") return v.split("$INPUT").join(input);
   if (Array.isArray(v)) return v.map((x) => subst(x, input));
-  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, subst(x, input)]));
+  // `respond` steps are substituted later, per message.
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, k === "respond" ? x : subst(x, input)]));
   return v;
 }
 
@@ -100,15 +110,13 @@ async function run(steps: any[]): Promise<void> {
 }
 
 out({ type: "system", subtype: "init", cwd: process.cwd(), argv, envMark: process.env.LADVIN_TEST_MARK });
-await run(script);
+// Like claude, the script is the response to the first user message.
+const first = await nextLine();
+await run(subst(script, inputText(first ?? "")));
 for (let line = await nextLine(); line !== null; line = await nextLine()) {
   if (!respondSteps) continue;
-  let input = line;
-  try {
-    input = JSON.parse(line).message?.content ?? line;
-  } catch {}
   resultEmitted = false;
-  await run(subst(respondSteps, String(input)));
+  await run(subst(respondSteps, inputText(line)));
   if (!resultEmitted) out({ type: "result", subtype: "success", is_error: false, result: "", usage: USAGE, permission_denials: [] });
 }
 await client?.close();

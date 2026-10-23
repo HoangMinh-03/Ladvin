@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DEFAULT_WALL_MS, type Report, type ReportStatus, type Usage, ZERO_USAGE } from "@ladvin/protocol";
 import { buildArgs, DELEGATE_SYSTEM_PROMPT, parseEvent, userMessage } from "./claude";
 import { taskDir } from "./paths";
+import { TEAM_SYSTEM_PROMPT } from "./team-prompt";
 import type { TaskStore } from "./store";
 import type { Tmux } from "./tmux";
 
@@ -86,6 +87,40 @@ export class Runner {
     await Promise.all(exits);
   }
 
+  // Team mode: deliver a message to a member. A live member gets it on stdin (folded into its current turn
+  // if busy); a stopped member with a session is resumed with it.
+  async inject(taskId: string, text: string): Promise<void> {
+    const l = this.live.get(taskId);
+    if (l && !l.finished) {
+      l.proc.stdin!.write(userMessage(text));
+      this.o.store.update(taskId, { state: "running" });
+      return;
+    }
+    const t = this.o.store.get(taskId);
+    if (!t) throw new Error(`unknown task ${taskId}`);
+    if (!t.sessionId) throw new Error(`task ${taskId} has no session to resume`);
+    await this.followup(taskId, text);
+  }
+
+  // Graceful end of a live run: close stdin and let claude exit.
+  stop(taskId: string, reason: string): void {
+    if (!this.live.has(taskId)) return;
+    this.finish(taskId, { state: "done", failReason: reason, report: { summary: reason, status: "success", reportMissing: false } });
+  }
+
+  // Stops idle team members whose coordinator has not been in touch for idleMs (spec §6.2).
+  sweepIdle(now: number, lastHubContact: (teamId: string) => number, idleMs: number): string[] {
+    const stopped: string[] = [];
+    for (const id of this.running()) {
+      const t = this.o.store.get(id);
+      if (t?.kind !== "team" || t.state !== "idle" || !t.team) continue;
+      if (now - lastHubContact(t.team.teamId) <= idleMs) continue;
+      this.stop(id, "stopped: idle timeout (resumable)");
+      stopped.push(id);
+    }
+    return stopped;
+  }
+
   onAgentReport(taskId: string, r: { summary: string; status: ReportStatus; details?: string }): void {
     if (!this.live.has(taskId)) return;
     this.finish(taskId, { state: "done", report: { ...r, reportMissing: false } });
@@ -99,7 +134,7 @@ export class Runner {
       mcpConfigPath,
       JSON.stringify({ mcpServers: { ladvin: { command: mcp.command, args: mcp.args, env: { LADVIN_HOME: process.env.LADVIN_HOME ?? "" } } } }),
     );
-    const args = buildArgs({ preset: t.preset, cwd: t.cwd, mcpConfigPath, systemPrompt: DELEGATE_SYSTEM_PROMPT, resumeSessionId });
+    const args = buildArgs({ preset: t.preset, cwd: t.cwd, mcpConfigPath, systemPrompt: t.kind === "team" && t.team ? TEAM_SYSTEM_PROMPT(t.team.role) : DELEGATE_SYSTEM_PROMPT, resumeSessionId });
     const proc = spawn(this.o.claudeBin, [...(this.o.claudeBinArgs ?? []), ...args], {
       cwd: t.cwd,
       env: { ...process.env, ...this.o.env },
@@ -168,6 +203,11 @@ export class Runner {
       if (report && live.finished) this.o.store.setReport(taskId, { ...report, usage, permissionDenials: live.denials });
       if (t.limits?.maxTokens && billable(usage) > t.limits.maxTokens) {
         this.cancel(taskId, "limit: tokens");
+        return;
+      }
+      // A team member stays alive between turns, waiting for the next message.
+      if (t.kind === "team") {
+        if (!live.finished) this.o.store.update(taskId, { state: "idle" });
         return;
       }
       if (!live.finished) {
