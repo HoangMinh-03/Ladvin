@@ -2,7 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import { type HelloResult, LineCodec, type Owner, PROTOCOL_MAJOR, type PingResult, RpcPeer } from "@ladvin/protocol";
 import type { Transport } from "./transport";
 
-export type ConnectInfo = { agentdVersion: string; clockOffsetMs: number };
+export type ConnectInfo = { agentdVersion: string; clockOffsetMs: number; binarySha256?: string };
 
 // One live bridge (ssh … ladvin-agentd bridge) per host, reconnected lazily.
 export class HostConnection {
@@ -46,7 +46,7 @@ export class HostConnection {
       offsets.push(Date.parse(now) - (t0 + t1) / 2);
     }
     offsets.sort((a, b) => a - b);
-    this.info = { agentdVersion: hello.agentdVersion, clockOffsetMs: offsets[1]! };
+    this.info = { agentdVersion: hello.agentdVersion, clockOffsetMs: offsets[1]!, binarySha256: hello.binarySha256 };
     return this.info;
   }
 

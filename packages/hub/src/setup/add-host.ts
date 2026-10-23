@@ -119,26 +119,40 @@ export async function addHost(alias: string, o: AddHostOptions): Promise<{ lines
   const local = await (o.fetchBinary ?? downloadBinary)(plat.os, plat.arch, AGENTD_VERSION);
   const mk = await t.exec(posix("mkdir -p ~/.ladvin/bin && chmod 700 ~/.ladvin"));
   if (mk.code !== 0) return { lines: [...lines, `cannot create ~/.ladvin on ${alias}: ${mk.stderr.trim()}`] };
-  // Upload beside the live binary and rename: overwriting a running executable fails with "text file busy".
-  await t.upload(local, "~/.ladvin/bin/ladvin-agentd.new");
+  // Compare binaries by hash, not version: a rebuilt binary can keep its version number.
+  let localSha: string | undefined;
+  try {
+    localSha = createHash("sha256").update(readFileSync(local)).digest("hex");
+  } catch {}
+  const remoteSha = (
+    await t.exec(posix("sha256sum ~/.ladvin/bin/ladvin-agentd 2>/dev/null || shasum -a 256 ~/.ladvin/bin/ladvin-agentd 2>/dev/null"))
+  ).stdout
+    .trim()
+    .split(/\s+/)[0];
+  const upToDate = !!localSha && remoteSha === localSha;
   const cfg = JSON.stringify({ claudeBin: tools.claude, tmuxBin: tools.tmux, path: tools.path });
-  const inst = await t.exec(
-    posix(
-      `chmod +x ~/.ladvin/bin/ladvin-agentd.new && mv -f ~/.ladvin/bin/ladvin-agentd.new ~/.ladvin/bin/ladvin-agentd && printf '%s' ${shq(cfg)} > ~/.ladvin/agentd.json`,
-    ),
-  );
-  if (inst.code !== 0) return { lines: [...lines, `installing agentd on ${alias} failed: ${inst.stderr.trim()}`] };
-  lines.push(`✓ installed ladvin-agentd ${AGENTD_VERSION}`);
+  if (!upToDate) {
+    // Upload beside the live binary and rename: overwriting a running executable fails with "text file busy".
+    await t.upload(local, "~/.ladvin/bin/ladvin-agentd.new");
+    const inst = await t.exec(posix("chmod +x ~/.ladvin/bin/ladvin-agentd.new && mv -f ~/.ladvin/bin/ladvin-agentd.new ~/.ladvin/bin/ladvin-agentd"));
+    if (inst.code !== 0) return { lines: [...lines, `installing agentd on ${alias} failed: ${inst.stderr.trim()}`] };
+    lines.push(`✓ installed ladvin-agentd ${AGENTD_VERSION}`);
+  } else lines.push("✓ ladvin-agentd already up to date");
+  const conf = await t.exec(posix(`printf '%s' ${shq(cfg)} > ~/.ladvin/agentd.json`));
+  if (conf.code !== 0) return { lines: [...lines, `writing ~/.ladvin/agentd.json on ${alias} failed: ${conf.stderr.trim()}`] };
 
   let info = await o.connection.connect();
-  if (info.agentdVersion !== AGENTD_VERSION) {
-    // An older daemon is still serving; restart it unless agents are running.
+  const stale = localSha ? info.binarySha256 !== localSha : info.agentdVersion !== AGENTD_VERSION;
+  if (stale) {
+    // The daemon still runs an older binary; restart it unless agents are running.
     try {
       await o.connection.call("shutdown", {});
       await new Promise((r) => setTimeout(r, 500));
       info = await o.connection.connect();
+      lines.push("✓ restarted agentd on the new binary");
     } catch (e) {
-      lines.push(`⚠ agentd ${info.agentdVersion} is still running agents; it will be replaced when you stop them (${e instanceof Error ? e.message : e}).`);
+      const n = (e instanceof Error ? e.message : String(e)).match(/(\d+) agents? running/)?.[1] ?? "its";
+      lines.push(`⚠ agentd keeps running the old binary until its ${n} agent(s) finish; run /ladvin:add-host ${alias} again afterwards.`);
     }
   }
   lines.push(`✓ connected (agentd ${info.agentdVersion}, clock offset ${Math.round(info.clockOffsetMs)} ms)`);

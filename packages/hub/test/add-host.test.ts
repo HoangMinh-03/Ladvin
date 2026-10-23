@@ -187,3 +187,70 @@ test("ssh never waits long on a dead host", async () => {
   const { sshBase } = await import("../src/transport");
   expect(sshBase().join(" ")).toContain("ConnectTimeout=10");
 });
+
+// ---- upgrade by binary hash ----
+function binary(content: string): { path: string; sha: string } {
+  const dir = mkdtempSync(join(tmpdir(), "ladvin-bin-"));
+  const path = join(dir, "ladvin-agentd-linux-x64");
+  writeFileSync(path, content);
+  return { path, sha: createHash("sha256").update(content).digest("hex") };
+}
+
+function seqConnection(shas: string[], shutdown: () => Promise<unknown>) {
+  const calls: string[] = [];
+  let i = 0;
+  return {
+    calls,
+    connection: {
+      connect: async () => ({ agentdVersion: "0.3.0", clockOffsetMs: 0, binarySha256: shas[Math.min(i++, shas.length - 1)] }),
+      call: async (m: string) => {
+        calls.push(m);
+        return m === "shutdown" ? shutdown() : {};
+      },
+    } as any,
+  };
+}
+
+test("identical binary: no upload, no restart", async () => {
+  const bin = binary("v3");
+  const { t, uploads } = fakeTransport([
+    ["uname", { stdout: "Linux x86_64\n" }],
+    ["command -v", { stdout: LOGIN_OK }],
+    ["sha256sum", { stdout: `${bin.sha}  /home/u/.ladvin/bin/ladvin-agentd\n` }],
+  ]);
+  const { connection, calls } = seqConnection([bin.sha], async () => ({}));
+  const r = await addHost("box", { transport: t, connection, fetchBinary: async () => bin.path });
+  expect(uploads).toEqual([]);
+  expect(calls).not.toContain("shutdown");
+  expect(r.lines).toContain("✓ ladvin-agentd already up to date");
+  expect(r.host).toBeDefined();
+});
+
+test("new binary while agents run: uploaded, restart deferred with a warning", async () => {
+  const bin = binary("v3");
+  const { t, uploads } = fakeTransport([
+    ["uname", { stdout: "Linux x86_64\n" }],
+    ["command -v", { stdout: LOGIN_OK }],
+    ["sha256sum", { stdout: `${"0".repeat(64)}  x\n` }],
+  ]);
+  const { connection } = seqConnection(["old"], async () => {
+    throw new Error("2 agents running; pass force to stop them");
+  });
+  const r = await addHost("box", { transport: t, connection, fetchBinary: async () => bin.path });
+  expect(uploads).toHaveLength(1);
+  expect(r.lines.join("\n")).toContain("keeps running the old binary until its 2 agent(s) finish");
+  expect(r.host).toBeDefined();
+});
+
+test("new binary while idle: daemon restarted on it", async () => {
+  const bin = binary("v3");
+  const { t } = fakeTransport([
+    ["uname", { stdout: "Linux x86_64\n" }],
+    ["command -v", { stdout: LOGIN_OK }],
+    ["sha256sum", { stdout: "" }],
+  ]);
+  const { connection, calls } = seqConnection(["old", bin.sha], async () => ({}));
+  const r = await addHost("box", { transport: t, connection, fetchBinary: async () => bin.path });
+  expect(calls).toContain("shutdown");
+  expect(r.lines).toContain("✓ restarted agentd on the new binary");
+});
