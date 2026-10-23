@@ -148,9 +148,8 @@ export function registerTeamTools(server: McpServer, ctx: TeamCtx): void {
         await sleep(250);
         await poller.pollOnce();
       }
-      const unread = store.unread(team.teamId);
+      const unread = store.takeUnread(team.teamId);
       if (!unread.length) return ok("No new messages.");
-      store.markRead(team.teamId, unread.length);
       return ok(renderInbox(unread));
     }),
   );
@@ -170,7 +169,7 @@ export function registerTeamTools(server: McpServer, ctx: TeamCtx): void {
     },
     guarded(async (a) => {
       const team = active();
-      if (a.op === "list") return ok(renderTasks(team.tasks));
+      if (a.op === "list") return ok(renderTasks(team.tasks, team.teamId));
       if (a.op === "add" && !a.title) throw new ToolError("add needs a title.");
       if (a.op === "update" && !a.id) throw new ToolError("update needs an id.");
       const op =
@@ -180,7 +179,7 @@ export function registerTeamTools(server: McpServer, ctx: TeamCtx): void {
       const tasks = applyOp(team.tasks, op, "local");
       store.save({ ...team, tasks });
       await syncTasks(pool, team, tasks);
-      return ok(renderTasks(tasks));
+      return ok(renderTasks(tasks, team.teamId));
     }),
   );
 
@@ -211,8 +210,7 @@ export function registerTeamTools(server: McpServer, ctx: TeamCtx): void {
       await poller.pollOnce();
       poller.stop();
       store.end(team.teamId);
-      const unread = store.unread(team.teamId);
-      store.markRead(team.teamId, unread.length);
+      const unread = store.takeUnread(team.teamId);
       return ok(`Ended ${team.teamId}.${unread.length ? `\nFinal messages:\n${renderInbox(unread)}` : "\nNo final messages."}`);
     }),
   );

@@ -12,9 +12,8 @@ export function runHook(event: "post" | "stop", input: HookInput, env: { CLAUDE_
     const store = new TeamStore(projectDir);
     const team = store.active();
     if (!team) return "";
-    const unread = store.unread(team.teamId);
+    const unread = store.takeUnread(team.teamId);
     if (!unread.length) return "";
-    store.markRead(team.teamId, unread.length);
     const body = renderInbox(unread);
     if (event === "post")
       return JSON.stringify({

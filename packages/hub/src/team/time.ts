@@ -16,6 +16,16 @@ export function fmt(d: Date): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
+export function fmtUtc(d: Date): string {
+  return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}.${pad(d.getUTCMilliseconds(), 3)}Z`;
+}
+
+// Local time for the coordinator, UTC because teammates report in UTC (see TEAM_SYSTEM_PROMPT).
 export function renderInbox(entries: InboxEntry[]): string {
-  return entries.map((e) => wrapRemote(e.host, e.taskId, `[${fmt(new Date(e.at))}] ${e.role}@${e.host}: ${e.text}`)).join("\n");
+  return entries
+    .map((e) => {
+      const d = new Date(e.at);
+      return wrapRemote(e.host, e.taskId, `[${fmt(d)} / ${fmtUtc(d)}] ${e.role}@${e.host}: ${e.text}`);
+    })
+    .join("\n");
 }

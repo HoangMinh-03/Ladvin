@@ -50,7 +50,7 @@ Example: a performance hunt. You drive a load test locally. An `observer` teamma
 2. Agree on a plan first. Teammates send theirs with `team_send`. Put the steps in `ladvin_team_tasks` so everyone sees who does what.
 3. Talk with `ladvin_team_send({to: role | "all", text, files?})`. Teammates only see what you send, and you only see what they `team_send`. Their other output is invisible.
 4. At sync points, for example after each load step, call `ladvin_team_inbox({wait_seconds})`. New messages also appear on their own after your tool calls, and before you stop.
-5. Timestamps in the inbox are already converted to this machine's clock, so you can line them up with your own logs.
+5. Inbox entries show local time and UTC (`[13:41:51.815 / 06:41:51.815Z]`), already corrected for clock skew. Teammates report their observation times in UTC (`…Z`): compare those with the UTC column and with `date -u` here.
 6. Files teammates share land in `.ladvin/shared/<team>/`.
 7. Finish with `ladvin_team_end`. It collects final notes and stops the teammates. Idle teammates stop by themselves 15 minutes after you disconnect. `ladvin_team_resume` reconnects in a new session.
 

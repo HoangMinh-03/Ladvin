@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeF
 import { join } from "node:path";
 import type { Preset, TeamTask, TeamTaskOp } from "@ladvin/protocol";
 import { projectStateDir } from "../state";
+import { wrapRemote } from "../untrusted";
 
 export type TeamMember = { taskId: string; host: string; role: string; preset: Preset; cwd: string };
 export type Team = {
@@ -109,9 +110,28 @@ export class TeamStore {
     return this.all(teamId).slice(this.cursor(teamId));
   }
 
-  markRead(teamId: string, count?: number): void {
-    const n = count === undefined ? this.all(teamId).length : this.cursor(teamId) + count;
-    writeFileSync(join(this.dir(teamId), "read-cursor"), String(n));
+  // The cursor only moves forward: overlapping readers (parallel PostToolUse hooks, a hook and a tool call)
+  // may both deliver the same entries, but can never skip one.
+  markReadTo(teamId: string, n: number): void {
+    const next = Math.max(this.cursor(teamId), n);
+    mkdirSync(this.dir(teamId), { recursive: true });
+    writeJson(join(this.dir(teamId), "read-cursor"), next);
+  }
+
+  markRead(teamId: string): void {
+    this.markReadTo(teamId, this.all(teamId).length);
+  }
+
+  // Returns the unread entries and marks exactly those read.
+  takeUnread(teamId: string): InboxEntry[] {
+    const start = this.cursor(teamId);
+    const entries = this.all(teamId).slice(start);
+    if (entries.length) this.markReadTo(teamId, start + entries.length);
+    return entries;
+  }
+
+  lockFile(): string {
+    return join(this.root, "poller.lock");
   }
 }
 
@@ -133,8 +153,12 @@ export function describeOp(op: TeamTaskOp, tasks: TeamTask[]): string {
   return `updated ${op.id}: ${parts.join(", ")}`;
 }
 
-export function renderTasks(tasks: TeamTask[]): string {
-  return tasks.length
-    ? tasks.map((t) => `${t.id} [${t.status}] ${t.title}${t.owner ? ` (${t.owner})` : ""}${t.note ? ` — ${t.note}` : ""}`).join("\n")
-    : "The task list is empty.";
+// Titles and notes may come from teammates, so the list is remote content (spec §11).
+export function renderTasks(tasks: TeamTask[], teamId: string): string {
+  if (!tasks.length) return "The task list is empty.";
+  return wrapRemote(
+    "team",
+    teamId,
+    tasks.map((t) => `${t.id} [${t.status}] ${t.title}${t.owner ? ` (${t.owner})` : ""}${t.note ? ` — ${t.note}` : ""}`).join("\n"),
+  );
 }

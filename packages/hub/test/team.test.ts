@@ -91,7 +91,7 @@ test("teammate's first message reaches the local inbox, timestamped and wrapped"
   expect(started.isError).toBe(false);
   expect(started.text).toMatch(/team_[0-9a-f]{8}/);
   const inbox = await inboxUntil(c, "plan: watch iostat");
-  expect(inbox).toMatch(/\[\d\d:\d\d:\d\d\.\d{3}\] watcher@box: plan: watch iostat/);
+  expect(inbox).toMatch(/\[\d\d:\d\d:\d\d\.\d{3} \/ \d\d:\d\d:\d\d\.\d{3}Z\] watcher@box: plan: watch iostat/);
   expect(inbox).toContain('<ladvin-remote-content host="box"');
 }, 40000);
 

@@ -18,6 +18,15 @@ function projectStateDir(projectDir) {
   return dir;
 }
 
+// packages/hub/src/untrusted.ts
+function wrapRemote(host, agent, body) {
+  const safe = body.replace(/<\/?ladvin-remote-content/gi, (m) => m.replace("<", "&lt;"));
+  const attr = (s) => s.replace(/[^\w.@:-]/g, "_");
+  return `<ladvin-remote-content host="${attr(host)}" agent="${attr(agent)}">
+${safe}
+</ladvin-remote-content>`;
+}
+
 // packages/hub/src/team/store.ts
 function writeJson(file, value) {
   const tmp = `${file}.${process.pid}.tmp`;
@@ -100,19 +109,24 @@ class TeamStore {
   unread(teamId) {
     return this.all(teamId).slice(this.cursor(teamId));
   }
-  markRead(teamId, count) {
-    const n = count === undefined ? this.all(teamId).length : this.cursor(teamId) + count;
-    writeFileSync2(join2(this.dir(teamId), "read-cursor"), String(n));
+  markReadTo(teamId, n) {
+    const next = Math.max(this.cursor(teamId), n);
+    mkdirSync2(this.dir(teamId), { recursive: true });
+    writeJson(join2(this.dir(teamId), "read-cursor"), next);
   }
-}
-
-// packages/hub/src/untrusted.ts
-function wrapRemote(host, agent, body) {
-  const safe = body.replace(/<\/?ladvin-remote-content/gi, (m) => m.replace("<", "&lt;"));
-  const attr = (s) => s.replace(/[^\w.@:-]/g, "_");
-  return `<ladvin-remote-content host="${attr(host)}" agent="${attr(agent)}">
-${safe}
-</ladvin-remote-content>`;
+  markRead(teamId) {
+    this.markReadTo(teamId, this.all(teamId).length);
+  }
+  takeUnread(teamId) {
+    const start = this.cursor(teamId);
+    const entries = this.all(teamId).slice(start);
+    if (entries.length)
+      this.markReadTo(teamId, start + entries.length);
+    return entries;
+  }
+  lockFile() {
+    return join2(this.root, "poller.lock");
+  }
 }
 
 // packages/hub/src/team/time.ts
@@ -120,8 +134,14 @@ var pad = (n, w = 2) => String(n).padStart(w, "0");
 function fmt(d) {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
+function fmtUtc(d) {
+  return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}.${pad(d.getUTCMilliseconds(), 3)}Z`;
+}
 function renderInbox(entries) {
-  return entries.map((e) => wrapRemote(e.host, e.taskId, `[${fmt(new Date(e.at))}] ${e.role}@${e.host}: ${e.text}`)).join(`
+  return entries.map((e) => {
+    const d = new Date(e.at);
+    return wrapRemote(e.host, e.taskId, `[${fmt(d)} / ${fmtUtc(d)}] ${e.role}@${e.host}: ${e.text}`);
+  }).join(`
 `);
 }
 
@@ -135,10 +155,9 @@ function runHook(event, input, env) {
     const team = store.active();
     if (!team)
       return "";
-    const unread = store.unread(team.teamId);
+    const unread = store.takeUnread(team.teamId);
     if (!unread.length)
       return "";
-    store.markRead(team.teamId, unread.length);
     const body = renderInbox(unread);
     if (event === "post")
       return JSON.stringify({
