@@ -19900,6 +19900,8 @@ var AgentReportParams = objectType({
   details: stringType().optional()
 });
 var AgentAttachParams = objectType({ taskId: stringType(), path: stringType(), note: stringType().optional() });
+// packages/protocol/src/usage.ts
+var WEEK_MS = 7 * 86400000;
 // packages/hub/src/connection.ts
 class HostConnection {
   alias;
