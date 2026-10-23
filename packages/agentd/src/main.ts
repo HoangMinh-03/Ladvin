@@ -9,7 +9,7 @@ import { TaskStore } from "./store";
 import { Tmux } from "./tmux";
 import { view } from "./viewer";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 
 async function serve(): Promise<void> {
   const cfg = loadConfig();

@@ -6,8 +6,9 @@ import type { ConnectInfo } from "../connection";
 import { type HostConfig, ladvinHome, saveHost } from "../state";
 import type { Transport } from "../transport";
 
-export const AGENTD_VERSION = "0.2.0";
-export const RELEASE_REPO = "OWNER/ladvin"; // set once the GitHub repo exists
+export const AGENTD_VERSION = "0.3.0";
+// GitHub repo whose releases carry the agentd binaries; LADVIN_RELEASE_REPO overrides (forks).
+export const RELEASE_REPO = "HoangMinh-03/Ladvin";
 
 type Os = HostConfig["os"];
 type Arch = HostConfig["arch"];
@@ -64,7 +65,7 @@ export async function downloadBinary(
   const dest = join(dir, name);
   if (existsSync(dest)) return dest;
   const f = o.fetchImpl ?? fetch;
-  const base = `https://github.com/${RELEASE_REPO}/releases/download/v${version}`;
+  const base = `https://github.com/${process.env.LADVIN_RELEASE_REPO || RELEASE_REPO}/releases/download/v${version}`;
   const get = async (url: string) => {
     const r = await f(url);
     if (!r.ok) throw new Error(`download failed: ${url} → HTTP ${r.status}`);

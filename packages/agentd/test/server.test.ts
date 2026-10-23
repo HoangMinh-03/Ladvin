@@ -134,7 +134,7 @@ test("bridge autostarts a server when none is running", async () => {
   p.stdout!.setEncoding("utf8");
   const peer = peerOver((l) => p.stdin!.write(l), (fn) => p.stdout!.on("data", fn));
   const hello = await peer.request<{ agentdVersion: string }>("hello", { protocolMajor: 1, client: owner }, 10000);
-  expect(hello.agentdVersion).toBe("0.2.0");
+  expect(hello.agentdVersion).toBe("0.3.0");
   // stop the autostarted server through a fresh client
   const c = await client();
   await c.request("shutdown", {}).catch(() => {});

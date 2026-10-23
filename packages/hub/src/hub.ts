@@ -11,7 +11,7 @@ import { registerHostTools } from "./tools/hosts";
 import { registerTeamTools } from "./tools/team";
 import type { Transport } from "./transport";
 
-export const HUB_VERSION = "0.2.0";
+export const HUB_VERSION = "0.3.0";
 
 export type Hub = { server: McpServer; pool: ConnectionPool; poller: TeamPoller; close(): void };
 

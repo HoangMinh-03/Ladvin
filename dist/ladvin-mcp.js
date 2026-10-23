@@ -20933,8 +20933,8 @@ function registerBurnTools(server, ctx) {
 import { createHash as createHash3 } from "node:crypto";
 import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync8, writeFileSync as writeFileSync7 } from "node:fs";
 import { join as join8 } from "node:path";
-var AGENTD_VERSION = "0.2.0";
-var RELEASE_REPO = "OWNER/ladvin";
+var AGENTD_VERSION = "0.3.0";
+var RELEASE_REPO = "HoangMinh-03/Ladvin";
 var shq2 = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 function parseUname(out) {
   const [sys, machine] = out.trim().split(/\s+/);
@@ -20975,7 +20975,7 @@ async function downloadBinary(os, arch, version, o = {}) {
   if (existsSync8(dest))
     return dest;
   const f = o.fetchImpl ?? fetch;
-  const base = `https://github.com/${RELEASE_REPO}/releases/download/v${version}`;
+  const base = `https://github.com/${process.env.LADVIN_RELEASE_REPO || RELEASE_REPO}/releases/download/v${version}`;
   const get = async (url) => {
     const r = await f(url);
     if (!r.ok)
@@ -21365,7 +21365,7 @@ ${store.unread(team.teamId).length} unread message(s); read them with ladvin_tea
 }
 
 // packages/hub/src/hub.ts
-var HUB_VERSION = "0.2.0";
+var HUB_VERSION = "0.3.0";
 function createHub(o) {
   const server = new McpServer({ name: "ladvin", version: HUB_VERSION });
   const pool = new ConnectionPool(o.owner, o.transportFor);

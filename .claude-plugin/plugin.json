@@ -1,8 +1,19 @@
 {
   "name": "ladvin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "ladvin — lazy dev plugin. Let the Claude Code session on your machine delegate work to, and team up with, Claude Code agents on your SSH servers.",
-  "author": { "name": "ladvin contributors" },
+  "author": {
+    "name": "ladvin contributors"
+  },
   "license": "MIT",
-  "keywords": ["ssh", "remote", "agents", "orchestration", "delegate"]
+  "keywords": [
+    "ssh",
+    "remote",
+    "agents",
+    "orchestration",
+    "delegate"
+  ],
+  "icon": ".claude-plugin/icon.png",
+  "repository": "https://github.com/HoangMinh-03/Ladvin",
+  "homepage": "https://github.com/HoangMinh-03/Ladvin"
 }
