@@ -30,6 +30,7 @@ type Live = {
   timer: ReturnType<typeof setTimeout>;
   // Usage of the current turn from assistant events (deduped by message id), superseded by `result`.
   turnUsage: Usage;
+  committed: Usage; // usage of all completed turns
   seenMessages: Set<string>;
 };
 
@@ -154,6 +155,7 @@ export class Runner {
       denials: [],
       timer: setTimeout(() => this.cancel(taskId, "limit: wall"), wallMs),
       turnUsage: { ...ZERO_USAGE },
+      committed: { ...t.usage },
       seenMessages: new Set(),
     };
     // Spawn failures (moved claude binary, deleted cwd) emit "error" and may never emit "exit".
@@ -192,17 +194,23 @@ export class Runner {
       const activity = ev.toolUses.at(-1) ?? ev.text.split("\n")[0];
       if (activity) this.o.store.update(taskId, { lastActivity: activity.slice(0, 200) });
       // A delegated task is often one long turn: enforce max tokens as usage streams in, not only at `result`.
+      // The stored usage is live (earlier turns + this turn so far), so status and early reports are not 0.
       if (ev.usage && ev.id && !live.seenMessages.has(ev.id)) {
         live.seenMessages.add(ev.id);
         live.turnUsage = addUsage(live.turnUsage, ev.usage);
-        const t = this.o.store.get(taskId)!;
-        if (t.limits?.maxTokens && billable(addUsage(t.usage, live.turnUsage)) > t.limits.maxTokens) this.cancel(taskId, "limit: tokens");
+        const usage = addUsage(live.committed, live.turnUsage);
+        const t = this.o.store.update(taskId, { usage });
+        const report = this.o.store.getReport(taskId);
+        if (report && live.finished) this.o.store.setReport(taskId, { ...report, usage });
+        if (t.limits?.maxTokens && billable(usage) > t.limits.maxTokens) this.cancel(taskId, "limit: tokens");
       }
     } else if (ev.kind === "result") {
       live.turnUsage = { ...ZERO_USAGE };
       live.seenMessages.clear();
       const t = this.o.store.get(taskId)!;
-      const usage = addUsage(t.usage, ev.usage);
+      // `result` carries the turn's exact usage; it replaces the streamed estimate.
+      const usage = addUsage(live.committed, ev.usage);
+      live.committed = usage;
       this.o.store.update(taskId, { usage });
       live.denials.push(...ev.permissionDenials);
       const report = this.o.store.getReport(taskId);

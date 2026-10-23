@@ -162,3 +162,29 @@ test.skipIf(!dockerOk)("team over real ssh: plan, round trip, shared file both w
   expect((await call("ladvin_team_end", {})).isError).toBe(false);
   ssh("rm -f ~/.fake-claude-script.json");
 }, 300_000);
+
+test.skipIf(!dockerOk)("burn meter, idempotent upgrade, attach command — over real ssh", async () => {
+  const burn = await call("ladvin_burn");
+  expect(burn.isError).toBe(false);
+  expect(burn.text).toContain(`${ALIAS} (account unknown)`);
+
+  const again = await call("ladvin_add_host", { alias: ALIAS });
+  expect(again.isError).toBe(false);
+  expect(again.text).toContain("already up to date");
+
+  ssh(`cat > ~/.fake-claude-script.json <<'EOF'\n${JSON.stringify([{ sleepMs: 20000 }, { result: "x" }])}\nEOF`);
+  const id = (await call("ladvin_delegate", { host: ALIAS, task: "sleepy" })).text.match(/t_[0-9a-f]{8}/)![0];
+  process.env.LADVIN_TERMINAL = "print";
+  try {
+    let att = "";
+    for (let i = 0; i < 20 && !att.includes("tmux attach"); i++) {
+      att = (await call("ladvin_attach", { task_id: id })).text;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    expect(att).toContain(`tmux attach -t ladvin-${id}`);
+  } finally {
+    delete process.env.LADVIN_TERMINAL;
+    await call("ladvin_stop_all");
+    ssh("rm -f ~/.fake-claude-script.json");
+  }
+}, 300_000);

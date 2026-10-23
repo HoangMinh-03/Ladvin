@@ -78,3 +78,10 @@ Setup: the coordinator was real Claude Code (Sonnet, `-p`, `--plugin-dir`), with
 - **Latency:** from the teammate's `team_send` to the local inbox took about 2 s (poll interval 1 s plus ssh). Question sent → answer in the inbox took about 5.6 s, including the model's turn.
 - **Clock:** the measured offset was -11 ms, so normalisation works.
 - **Finding (timezone):** the teammate wrote times on its own clock in the host's timezone (UTC, `06:41:49`). The inbox stamps are local time (UTC+7, `13:41:51`). Clock skew is handled, but the coordinator still has to adjust for the timezone by hand. Next step: tell teammates the coordinator's UTC offset, or ask them to timestamp in UTC, and render the inbox with the offset.
+
+## Burn meter, upgrade and attach on a real host (kata54, 2026-10-23)
+
+- **add-host:** upgraded the host's agentd from an older build to 0.3.0 by binary hash, with no manual steps.
+- **Burn meter:** the host turned out to be logged into a **different Claude account** from the local machine. ladvin listed them as two separate accounts. The host's account showed real observed utilization (5h 57%, 7d 49%) from the agents' `rate_limit_event`. The local account showed `—` because no ladvin agent had run under it yet. This is exactly why the meter groups by account: work delegated to a host spends that host's account.
+- **Finding, fixed:** token counts read 0 until a turn's `result` event arrived. A task that files `ladvin_report` is already `done` at that point, so status and early reports showed 0. Usage now streams in from assistant messages, and `result` then corrects it to the exact value.
+- **attach (print mode):** produced `ssh -t kata54 'tmux attach -t ladvin-<task>'` for a live task.

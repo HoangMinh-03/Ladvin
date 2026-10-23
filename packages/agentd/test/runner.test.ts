@@ -193,3 +193,14 @@ test("viewer exits after the task reaches a terminal state", async () => {
   expect(lines.join("")).toContain("▸ assistant: hi");
   expect(lines.join("")).toContain("finished");
 });
+
+test("usage is visible while a turn runs and in a report filed before the result event", async () => {
+  const msg = { emit: { type: "assistant", message: { id: "m1", content: [{ type: "text", text: "." }], usage: { input_tokens: 3, output_tokens: 4 } } } };
+  script([msg, { waitInput: true }]);
+  const id = newTask();
+  runner.start(id, "do it");
+  await until(() => store.get(id)!.usage.output === 4);
+  runner.onAgentReport(id, { summary: "ok", status: "success" });
+  await until(() => state(id) === "done");
+  expect(store.getReport(id)!.usage.output).toBe(4);
+});
