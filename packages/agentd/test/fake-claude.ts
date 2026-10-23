@@ -9,7 +9,10 @@
 //   {ifExists: path, then: Step[], else?: Step[]}
 //   {callTool: {name, args}}               call a tool on the "ladvin" MCP server from --mcp-config
 //   {exit: number}
+//   {respond: Step[]}                      after the script, run these for every further stdin line, with "$INPUT"
+//                                          replaced by that message text; a result is emitted if the steps emit none
 // After the script: stays alive until stdin closes, then exits 0 (like real claude).
+// Tool results are recorded as {"type":"tool_result_seen","name","isError","text"} so tests can assert on them.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -63,11 +66,22 @@ async function mcp(): Promise<Client> {
   return client;
 }
 
+let resultEmitted = false;
+let respondSteps: any[] | null = null;
+
+function subst(v: any, input: string): any {
+  if (typeof v === "string") return v.split("$INPUT").join(input);
+  if (Array.isArray(v)) return v.map((x) => subst(x, input));
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, subst(x, input)]));
+  return v;
+}
+
 async function run(steps: any[]): Promise<void> {
   for (const s of steps) {
-    if (s.emit) out(s.emit);
+    if (s.respond) respondSteps = s.respond;
+    else if (s.emit) out(s.emit);
     else if (s.say !== undefined) out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: s.say }] } });
-    else if (s.result !== undefined)
+    else if (s.result !== undefined && (resultEmitted = true))
       out({ type: "result", subtype: "success", is_error: !!s.isError, result: s.result, usage: USAGE, permission_denials: [] });
     else if (s.sleepMs) await new Promise((r) => setTimeout(r, s.sleepMs));
     else if (s.waitInput) await nextLine();
@@ -76,7 +90,10 @@ async function run(steps: any[]): Promise<void> {
     else if (s.callTool) {
       // Mirror claude: in -p mode an MCP tool not in --allowedTools is denied (unless bypassPermissions).
       if (!mcpAllowed()) out({ type: "user", message: { role: "user", content: [{ type: "tool_result", is_error: true, content: `permission denied: mcp__ladvin__${s.callTool.name}` }] } });
-      else await (await mcp()).callTool({ name: s.callTool.name, arguments: s.callTool.args });
+      else {
+        const r: any = await (await mcp()).callTool({ name: s.callTool.name, arguments: s.callTool.args });
+        out({ type: "tool_result_seen", name: s.callTool.name, isError: !!r.isError, text: (r.content ?? []).map((c: any) => c.text).join("\n") });
+      }
     }
     else if (s.exit !== undefined) process.exit(s.exit);
   }
@@ -84,6 +101,15 @@ async function run(steps: any[]): Promise<void> {
 
 out({ type: "system", subtype: "init", cwd: process.cwd(), argv, envMark: process.env.LADVIN_TEST_MARK });
 await run(script);
+for (let line = await nextLine(); line !== null; line = await nextLine()) {
+  if (!respondSteps) continue;
+  let input = line;
+  try {
+    input = JSON.parse(line).message?.content ?? line;
+  } catch {}
+  resultEmitted = false;
+  await run(subst(respondSteps, String(input)));
+  if (!resultEmitted) out({ type: "result", subtype: "success", is_error: false, result: "", usage: USAGE, permission_denials: [] });
+}
 await client?.close();
-while ((await nextLine()) !== null) {}
 process.exit(0);

@@ -26,3 +26,26 @@ test("Report round-trips a full sample", () => {
   };
   expect(Report.parse(JSON.parse(JSON.stringify(sample)))).toEqual(sample);
 });
+
+import { OutMsg, TaskState, TeamJoinParams } from "../src/messages";
+
+test("team.join requires a role", () => {
+  const owner = { machineId: "m", projectDir: "/p" };
+  expect(TeamJoinParams.safeParse({ owner, teamId: "team_1", role: "", goal: "g", preset: "observer" }).success).toBe(false);
+  expect(TeamJoinParams.safeParse({ owner, teamId: "team_1", role: "db", goal: "g", preset: "observer" }).success).toBe(true);
+});
+
+test("OutMsg round-trips every kind", () => {
+  const base = { id: "m_000000000001", teamId: "team_1", taskId: "t_00000001", role: "db", sentAt: "2026-10-23T00:00:00.000Z" };
+  for (const m of [
+    { ...base, kind: "message", text: "hi" },
+    { ...base, kind: "file", name: "a.log", path: "a.log", size: 3, sha256: "ab", note: "n" },
+    { ...base, kind: "tasksOp", op: { op: "add", title: "watch iostat" } },
+    { ...base, kind: "tasksOp", op: { op: "update", id: "k1", status: "done" } },
+  ])
+    expect(OutMsg.parse(JSON.parse(JSON.stringify(m)))).toEqual(m as any);
+});
+
+test("idle is a task state", () => {
+  expect(TaskState.parse("idle")).toBe("idle");
+});
