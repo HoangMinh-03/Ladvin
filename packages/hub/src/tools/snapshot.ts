@@ -30,6 +30,8 @@ export type Snapshot = {
     tasks: TeamTask[];
     unread: number;
     recent: { at: string; role: string; host: string; text: string }[];
+    // both directions, oldest first; `from` is a member role or "you"
+    chat: { at: string; from: string; text: string }[];
   };
   burn: { label: string; hosts: string[]; fiveHourPct?: number; sevenDayPct?: number; running: number; over: string[] }[];
 };
@@ -49,6 +51,16 @@ export function registerSnapshotTool(server: McpServer, ctx: { owner: Owner; poo
       const burnRows = (readBurnCache(10 * 60_000) ?? []).filter((r) => r.key !== "unreachable");
       const tasksByHost = new Map<string, TaskInfo[]>();
       for (const { host, task } of await loc.projectTasks()) tasksByHost.set(host, [...(tasksByHost.get(host) ?? []), task]);
+      const active = ctx.store.active();
+      // Team members are not in the delegate index: fetch them directly.
+      for (const m of active?.members ?? []) {
+        if ([...tasksByHost.values()].flat().some((t) => t.taskId === m.taskId)) continue;
+        const t = await ctx.pool
+          .get(m.host)
+          .call<TaskInfo>("task.get", { taskId: m.taskId })
+          .catch(() => undefined);
+        if (t) tasksByHost.set(m.host, [...(tasksByHost.get(m.host) ?? []), t]);
+      }
       const hosts = loadHosts().map((h) => {
         const account = burnRows.find((r) => r.hosts.includes(h.alias))?.label;
         const reachable = !!ctx.pool.get(h.alias).info;
@@ -70,7 +82,6 @@ export function registerSnapshotTool(server: McpServer, ctx: { owner: Owner; poo
             ...(t.lastActivity ? { lastActivity: t.lastActivity } : {}),
             ...(t.failReason ? { failReason: t.failReason } : {}),
           });
-      const active = ctx.store.active();
       const team: Snapshot["team"] = active
         ? {
             teamId: active.teamId,
@@ -82,6 +93,12 @@ export function registerSnapshotTool(server: McpServer, ctx: { owner: Owner; poo
               .all(active.teamId)
               .slice(-8)
               .map((e) => ({ at: e.at, role: e.role, host: e.host, text: e.text })),
+            chat: [
+              ...ctx.store.all(active.teamId).map((e) => ({ at: e.at, from: e.role, text: e.text })),
+              ...ctx.store.sent(active.teamId).map((e) => ({ at: e.at, from: "you", text: e.text })),
+            ]
+              .sort((x, y) => Date.parse(x.at) - Date.parse(y.at))
+              .slice(-20),
           }
         : null;
       const pct = (w?: { utilization: number; resetsAt: number }) => {

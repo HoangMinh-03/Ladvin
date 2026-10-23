@@ -16,6 +16,7 @@ export type Team = {
   endedAt?: string;
 };
 // `at` is hub time (ISO), already normalised from the sender's clock.
+export type SentEntry = { at: string; to: string; text: string };
 export type InboxEntry = { id: string; at: string; role: string; host: string; taskId: string; text: string };
 
 function writeJson(file: string, value: unknown): void {
@@ -88,6 +89,21 @@ export class TeamStore {
       .split("\n")
       .filter(Boolean)
       .map((l) => JSON.parse(l) as InboxEntry);
+  }
+
+  // What the local agent sent, kept only so the panel can show the conversation both ways.
+  appendSent(teamId: string, e: SentEntry): void {
+    mkdirSync(this.dir(teamId), { recursive: true });
+    appendFileSync(join(this.dir(teamId), "sent.jsonl"), JSON.stringify(e) + "\n");
+  }
+
+  sent(teamId: string): SentEntry[] {
+    const f = join(this.dir(teamId), "sent.jsonl");
+    if (!existsSync(f)) return [];
+    return readFileSync(f, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as SentEntry);
   }
 
   has(teamId: string, id: string): boolean {

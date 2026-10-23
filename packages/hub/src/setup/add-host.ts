@@ -6,7 +6,7 @@ import type { ConnectInfo } from "../connection";
 import { type HostConfig, ladvinHome, saveHost } from "../state";
 import type { Transport } from "../transport";
 
-export const AGENTD_VERSION = "0.3.2";
+export const AGENTD_VERSION = "0.3.3";
 // GitHub repo whose releases carry the agentd binaries; LADVIN_RELEASE_REPO overrides (forks).
 export const RELEASE_REPO = "HoangMinh-03/Ladvin";
 

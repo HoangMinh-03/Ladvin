@@ -138,6 +138,7 @@ export function registerTeamTools(server: McpServer, ctx: TeamCtx): void {
       );
       const failed = results.flatMap((r, i) => (r.status === "rejected" ? [`${targets[i]!.role}: ${r.reason instanceof Error ? r.reason.message : r.reason}`] : []));
       if (failed.length === targets.length) throw new ToolError(`Not delivered:\n${failed.join("\n")}`);
+      if (failed.length < targets.length) store.appendSent(team.teamId, { at: new Date().toISOString(), to: a.to, text: a.text });
       return ok(`Sent to ${targets.map((m) => m.role).join(", ")}.${failed.length ? `\nNot delivered:\n${failed.join("\n")}` : ""}`);
     }),
   );

@@ -20247,6 +20247,18 @@ class TeamStore {
     return readFileSync3(f, "utf8").split(`
 `).filter(Boolean).map((l) => JSON.parse(l));
   }
+  appendSent(teamId, e) {
+    mkdirSync2(this.dir(teamId), { recursive: true });
+    appendFileSync2(join3(this.dir(teamId), "sent.jsonl"), JSON.stringify(e) + `
+`);
+  }
+  sent(teamId) {
+    const f = join3(this.dir(teamId), "sent.jsonl");
+    if (!existsSync3(f))
+      return [];
+    return readFileSync3(f, "utf8").split(`
+`).filter(Boolean).map((l) => JSON.parse(l));
+  }
   has(teamId, id) {
     return this.all(teamId).some((e) => e.id === id);
   }
@@ -20960,6 +20972,16 @@ function registerSnapshotTool(server, ctx) {
     const tasksByHost = new Map;
     for (const { host, task } of await loc.projectTasks())
       tasksByHost.set(host, [...tasksByHost.get(host) ?? [], task]);
+    const active = ctx.store.active();
+    for (const m of active?.members ?? []) {
+      if ([...tasksByHost.values()].flat().some((t) => t.taskId === m.taskId))
+        continue;
+      const t = await ctx.pool.get(m.host).call("task.get", { taskId: m.taskId }).catch(() => {
+        return;
+      });
+      if (t)
+        tasksByHost.set(m.host, [...tasksByHost.get(m.host) ?? [], t]);
+    }
     const hosts = loadHosts().map((h) => {
       const account = burnRows.find((r) => r.hosts.includes(h.alias))?.label;
       const reachable = !!ctx.pool.get(h.alias).info;
@@ -20981,14 +21003,17 @@ function registerSnapshotTool(server, ctx) {
           ...t.lastActivity ? { lastActivity: t.lastActivity } : {},
           ...t.failReason ? { failReason: t.failReason } : {}
         });
-    const active = ctx.store.active();
     const team = active ? {
       teamId: active.teamId,
       goal: active.goal,
       members: active.members.map((m) => ({ role: m.role, host: m.host, taskId: m.taskId })),
       tasks: active.tasks,
       unread: ctx.store.unread(active.teamId).length,
-      recent: ctx.store.all(active.teamId).slice(-8).map((e) => ({ at: e.at, role: e.role, host: e.host, text: e.text }))
+      recent: ctx.store.all(active.teamId).slice(-8).map((e) => ({ at: e.at, role: e.role, host: e.host, text: e.text })),
+      chat: [
+        ...ctx.store.all(active.teamId).map((e) => ({ at: e.at, from: e.role, text: e.text })),
+        ...ctx.store.sent(active.teamId).map((e) => ({ at: e.at, from: "you", text: e.text }))
+      ].sort((x, y) => Date.parse(x.at) - Date.parse(y.at)).slice(-20)
     } : null;
     const pct = (w) => {
       const l = liveWindow(w);
@@ -21015,7 +21040,7 @@ function registerSnapshotTool(server, ctx) {
 import { createHash as createHash3 } from "node:crypto";
 import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync8, writeFileSync as writeFileSync7 } from "node:fs";
 import { join as join8 } from "node:path";
-var AGENTD_VERSION = "0.3.2";
+var AGENTD_VERSION = "0.3.3";
 var RELEASE_REPO = "HoangMinh-03/Ladvin";
 var shq2 = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 function parseUname(out) {
@@ -21332,6 +21357,8 @@ ${names.map((n) => `- ${n}`).join(`
       throw new ToolError(`Not delivered:
 ${failed.join(`
 `)}`);
+    if (failed.length < targets.length)
+      store.appendSent(team.teamId, { at: new Date().toISOString(), to: a.to, text: a.text });
     return ok(`Sent to ${targets.map((m) => m.role).join(", ")}.${failed.length ? `
 Not delivered:
 ${failed.join(`
@@ -21447,7 +21474,7 @@ ${store.unread(team.teamId).length} unread message(s); read them with ladvin_tea
 }
 
 // packages/hub/src/hub.ts
-var HUB_VERSION = "0.3.2";
+var HUB_VERSION = "0.3.3";
 function createHub(o) {
   const server = new McpServer({ name: "ladvin", version: HUB_VERSION });
   const pool = new ConnectionPool(o.owner, o.transportFor);

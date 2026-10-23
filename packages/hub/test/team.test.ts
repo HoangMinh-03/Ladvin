@@ -6,6 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createHub, type Hub } from "../src/hub";
 import { saveHost } from "../src/state";
+import { TeamStore } from "../src/team/store";
 import { localTransport } from "../src/transport";
 
 const MAIN = join(import.meta.dir, "..", "..", "agentd", "src", "main.ts");
@@ -98,11 +99,13 @@ test("teammate's first message reaches the local inbox, timestamped and wrapped"
 test("local → teammate → local round trip", async () => {
   script([send("ready"), { result: "x" }, { respond: [send("ack $INPUT")] }]);
   const c = await hub();
-  await call(c, "ladvin_team_start", { goal: "g", members: [member] });
+  const teamId = teamIdOf((await call(c, "ladvin_team_start", { goal: "g", members: [member] })).text);
   await inboxUntil(c, "ready");
   expect((await call(c, "ladvin_team_send", { to: "watcher", text: "load step 1 at 500 rps" })).isError).toBe(false);
   const inbox = await inboxUntil(c, "500 rps");
   expect(inbox).toContain("ack [ladvin message from local @");
+  // kept for the panel's two-way chat view
+  expect(new TeamStore(project).sent(teamId).map((e) => e.text)).toEqual(["load step 1 at 500 rps"]);
 }, 40000);
 
 test("unknown recipient lists the roles", async () => {

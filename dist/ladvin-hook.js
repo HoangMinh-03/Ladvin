@@ -91,6 +91,18 @@ class TeamStore {
     return readFileSync2(f, "utf8").split(`
 `).filter(Boolean).map((l) => JSON.parse(l));
   }
+  appendSent(teamId, e) {
+    mkdirSync2(this.dir(teamId), { recursive: true });
+    appendFileSync2(join2(this.dir(teamId), "sent.jsonl"), JSON.stringify(e) + `
+`);
+  }
+  sent(teamId) {
+    const f = join2(this.dir(teamId), "sent.jsonl");
+    if (!existsSync2(f))
+      return [];
+    return readFileSync2(f, "utf8").split(`
+`).filter(Boolean).map((l) => JSON.parse(l));
+  }
   has(teamId, id) {
     return this.all(teamId).some((e) => e.id === id);
   }

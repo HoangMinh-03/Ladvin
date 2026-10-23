@@ -38,8 +38,8 @@ async function snapshot(pool: any): Promise<Snapshot> {
 }
 
 test("snapshot: hosts with accounts, this project's tasks, team without marking read, cached burn", async () => {
-  saveHost({ alias: "box", os: "linux", arch: "x64", maxPreset: "worker", agentdVersion: "0.3.2", addedAt: "t" });
-  saveHost({ alias: "dead", os: "linux", arch: "x64", maxPreset: "worker", agentdVersion: "0.3.2", addedAt: "t" });
+  saveHost({ alias: "box", os: "linux", arch: "x64", maxPreset: "worker", agentdVersion: "0.3.3", addedAt: "t" });
+  saveHost({ alias: "dead", os: "linux", arch: "x64", maxPreset: "worker", agentdVersion: "0.3.3", addedAt: "t" });
   addToIndex(project, { taskId: "t_00000001", host: "box" });
   addToIndex(project, { taskId: "t_00000002", host: "dead" });
   writeFileSync(
@@ -55,7 +55,7 @@ test("snapshot: hosts with accounts, this project's tasks, team without marking 
 
   const pool = {
     get: (alias: string) => ({
-      info: alias === "box" ? { agentdVersion: "0.3.2", clockOffsetMs: 0 } : null,
+      info: alias === "box" ? { agentdVersion: "0.3.3", clockOffsetMs: 0 } : null,
       call: async (m: string) => {
         if (alias === "dead") throw new Error("unreachable");
         if (m === "task.list")
@@ -88,4 +88,24 @@ test("snapshot: hosts with accounts, this project's tasks, team without marking 
 test("snapshot with nothing set up is empty, not an error", async () => {
   const s = await snapshot({ get: () => ({ info: null, call: async () => [] }) } as any);
   expect(s).toMatchObject({ hosts: [], tasks: [], team: null, burn: [] });
+});
+
+test("team members appear as agents even though delegate never indexed them; chat merges both directions", async () => {
+  saveHost({ alias: "box", os: "linux", arch: "x64", maxPreset: "worker", agentdVersion: "0.3.3", addedAt: "t" });
+  const store = new TeamStore(project);
+  const team = store.create("Interactive chat with the user about this server", [{ taskId: "t_00000009", host: "box", role: "kata", preset: "observer", cwd: "/w" }]);
+  store.appendInbox(team.teamId, { id: "m_1", at: "2026-10-23T09:00:01.000Z", role: "kata", host: "box", taskId: "t_00000009", text: "hello" });
+  store.appendSent(team.teamId, { at: "2026-10-23T09:00:05.000Z", to: "kata", text: "how much RAM?" });
+  const pool = {
+    get: () => ({
+      info: { agentdVersion: "0.3.3", clockOffsetMs: 0 },
+      call: async (m: string) => (m === "task.get" ? { taskId: "t_00000009", state: "idle", kind: "team", team: { teamId: team.teamId, role: "kata" }, preset: "observer", usage: ZERO } : []),
+    }),
+  } as any;
+  const s = await snapshot(pool);
+  expect(s.tasks).toMatchObject([{ taskId: "t_00000009", state: "idle", role: "kata", host: "box" }]);
+  expect(s.team!.chat).toEqual([
+    { at: "2026-10-23T09:00:01.000Z", from: "kata", text: "hello" },
+    { at: "2026-10-23T09:00:05.000Z", from: "you", text: "how much RAM?" },
+  ]);
 });
