@@ -137,3 +137,28 @@ test("sweepIdle stops only idle members of teams without recent hub contact", as
   await until(() => state(busy) === "running");
   expect(runner.sweepIdle(Date.now(), () => 0, 1)).toEqual([]);
 });
+
+test("a send never revives a member that was cancelled or hit a limit", async () => {
+  script(RESPONDER);
+  const id = member();
+  runner.start(id, "Team goal: g");
+  await until(() => state(id) === "idle");
+  runner.cancel(id);
+  await until(() => state(id) === "cancelled" && runner.running().length === 0);
+  expect(await runner.inject(id, "wake").catch((e) => e.message)).toContain("cancelled");
+  await new Promise((r) => setTimeout(r, 300));
+  expect(runner.running()).toEqual([]);
+});
+
+test("a member left by a dead agentd (failed: agentd restarted) can be resumed", async () => {
+  script(RESPONDER);
+  process.env.FAKE_CLAUDE_SCRIPT_RESUME = JSON.stringify([{ say: "got $INPUT" }, { result: "r" }]);
+  const id = member();
+  runner.start(id, "Team goal: g");
+  await until(() => state(id) === "idle");
+  await runner.stopAll();
+  store.update(id, { state: "failed", failReason: "agentd restarted" });
+  await runner.inject(id, "back");
+  await until(() => stream(id).includes("got back"));
+  delete process.env.FAKE_CLAUDE_SCRIPT_RESUME;
+});

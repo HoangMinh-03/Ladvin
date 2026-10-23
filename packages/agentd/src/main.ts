@@ -27,7 +27,7 @@ async function serve(): Promise<void> {
   });
   // Runs that were live when a previous agentd died can no longer be driven.
   for (const t of store.list())
-    if (t.state === "running") store.update(t.taskId, { state: "failed", failReason: "agentd restarted" });
+    if (t.state === "running" || t.state === "idle") store.update(t.taskId, { state: "failed", failReason: "agentd restarted" });
   const srv = await startServer({ store, runner, version: VERSION, onShutdown: () => process.exit(0) });
   const idleMs = Number(process.env.LADVIN_TEAM_IDLE_MS) || 15 * 60_000;
   setInterval(() => runner.sweepIdle(Date.now(), srv.lastHubContact, idleMs), 30_000).unref();

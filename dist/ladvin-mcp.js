@@ -19847,7 +19847,8 @@ var OutMsg = discriminatedUnionType("kind", [
     path: stringType(),
     size: numberType(),
     sha256: stringType(),
-    note: stringType().optional()
+    note: stringType().optional(),
+    staged: stringType().optional()
   }),
   objectType({ ...OutBase, kind: literalType("tasksOp"), op: TeamTaskOp })
 ]);

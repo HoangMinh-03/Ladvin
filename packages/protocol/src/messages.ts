@@ -79,6 +79,8 @@ export const OutMsg = z.discriminatedUnion("kind", [
     size: z.number(),
     sha256: z.string(),
     note: z.string().optional(),
+    // absolute path of the copy agentd took at share time; this, not `path`, is what the hub downloads
+    staged: z.string().optional(),
   }),
   z.object({ ...OutBase, kind: z.literal("tasksOp"), op: TeamTaskOp }),
 ]);

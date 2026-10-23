@@ -97,7 +97,7 @@ test("team.send reaches the live teammate as a framed message", async () => {
   await until(async () => ((await c.request<any>("task.get", { taskId })).state === "idle" ? true : undefined));
   await c.request("team.send", { taskId, text: "ping", from: "local" });
   const msgs = await pullUntil(c, (m) => m.some((x) => x.kind === "message" && x.text.includes("ping")));
-  expect((msgs.find((x) => x.kind === "message") as any).text).toMatch(/^echo \[ladvin message from local @ \d\d:\d\d:\d\d\.\d{3}\]: ping$/);
+  expect((msgs.find((x) => x.kind === "message") as any).text).toMatch(/^echo \[ladvin message from local @ \d\d:\d\d:\d\d\.\d{3}Z\]: ping$/);
 }, 20000);
 
 test("share_file queues a file entry with cwd-relative path and sha256", async () => {
@@ -169,4 +169,38 @@ test("team.stop ends the member", async () => {
     return t.state === "done" ? t : undefined;
   });
   expect(t.failReason).toBe("team ended");
+}, 20000);
+
+test("a shared file is staged at share time; later changes to the original do not leak", async () => {
+  const c = await client();
+  const { cwd } = await teammate(c, [
+    { writeFile: { path: "out.txt", content: "original" } },
+    { callTool: { name: "share_file", args: { path: "out.txt" } } },
+    { writeFile: { path: "out.txt", content: "swapped-later" } },
+    { result: "x" },
+  ]);
+  const msgs = await pullUntil(c, (m) => m.length > 0);
+  const f = msgs[0] as any;
+  expect(f.staged).toBeDefined();
+  expect(readFileSync(f.staged, "utf8")).toBe("original");
+  expect(readFileSync(join(cwd, "out.txt"), "utf8")).toBe("swapped-later");
+}, 20000);
+
+test("acked entries are compacted out of the outbox file", async () => {
+  const c = await client();
+  await teammate(c, [send("one"), send("two"), { result: "x" }]);
+  const msgs = await pullUntil(c, (m) => m.length === 2);
+  await c.request("team.ack", { ids: [msgs[0]!.id] });
+  const raw = readFileSync(join(home, "outbox.jsonl"), "utf8");
+  expect(raw).not.toContain(msgs[0]!.id);
+  expect(raw).toContain(msgs[1]!.id);
+}, 20000);
+
+test("incoming messages are stamped in UTC", async () => {
+  const c = await client();
+  const { taskId } = await teammate(c, [{ result: "ready" }, { respond: [send("echo $INPUT")] }]);
+  await until(async () => ((await c.request<any>("task.get", { taskId })).state === "idle" ? true : undefined));
+  await c.request("team.send", { taskId, text: "t", from: "local" });
+  const msgs = await pullUntil(c, (m) => m.some((x) => x.kind === "message" && x.text.includes("echo")));
+  expect((msgs.find((x) => x.kind === "message") as any).text).toMatch(/@ \d\d:\d\d:\d\d\.\d{3}Z\]: t$/);
 }, 20000);

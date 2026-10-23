@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Server } from "node:net";
 import { homedir } from "node:os";
@@ -192,8 +192,16 @@ export async function startServer(o: {
       const size = statSync(real).size;
       const cap = Number(process.env.LADVIN_MAX_SHARE_BYTES) || DEFAULT_MAX_SHARE_BYTES;
       if (size > cap) throw new RpcError(ERR_INVALID_PARAMS, `${rel} is ${size} bytes; the share limit is ${cap} bytes`);
-      const sha256 = createHash("sha256").update(readFileSync(real)).digest("hex");
-      outbox.append({ kind: "file", teamId: team.teamId, taskId, role: team.role, name: basename(real), path: inside, size, sha256, ...(note ? { note } : {}) });
+      // Copy now: the hub downloads later (seconds, or hours if it is away), and the original could be
+      // swapped for a symlink or grown past the cap in between.
+      const data = readFileSync(real);
+      if (data.length > cap) throw new RpcError(ERR_INVALID_PARAMS, `${rel} grew past the share limit (${cap} bytes)`);
+      const sha256 = createHash("sha256").update(data).digest("hex");
+      const stagingDir = join(ladvinHome(), "teams", team.teamId.replace(/[^w-]/g, "_"), "staging");
+      mkdirSync(stagingDir, { recursive: true });
+      const staged = join(stagingDir, `${randomBytes(4).toString("hex")}-${basename(real)}`);
+      writeFileSync(staged, data);
+      outbox.append({ kind: "file", teamId: team.teamId, taskId, role: team.role, name: basename(real), path: inside, size: data.length, sha256, staged, ...(note ? { note } : {}) });
       return {};
     });
 

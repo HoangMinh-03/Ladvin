@@ -98,6 +98,10 @@ export class Runner {
     }
     const t = this.o.store.get(taskId);
     if (!t) throw new Error(`unknown task ${taskId}`);
+    // Only members that went away on their own (idle timeout, dead agentd) may be woken by a message.
+    // A cancel (stop_all) or a hit limit must stick.
+    const resumable = t.state === "idle" || t.failReason?.startsWith("stopped:") || t.failReason === "agentd restarted";
+    if (!resumable) throw new Error(`task ${taskId} is ${t.state}${t.failReason ? ` (${t.failReason})` : ""} and cannot be resumed`);
     if (!t.sessionId) throw new Error(`task ${taskId} has no session to resume`);
     await this.followup(taskId, text);
   }
