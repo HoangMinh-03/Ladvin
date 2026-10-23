@@ -32,7 +32,7 @@ afterEach(async () => {
 
 test("connect performs hello and estimates clock offset", async () => {
   const info = await conn.connect();
-  expect(info.agentdVersion).toBe("0.3.1");
+  expect(info.agentdVersion).toBe("0.3.2");
   expect(Number.isFinite(info.clockOffsetMs)).toBe(true);
   expect(Math.abs(info.clockOffsetMs)).toBeLessThan(1000);
 }, 20000);

@@ -20948,11 +20948,74 @@ function registerBurnTools(server, ctx) {
   }));
 }
 
+// packages/hub/src/tools/snapshot.ts
+function registerSnapshotTool(server, ctx) {
+  const loc = taskLocator(ctx);
+  server.registerTool("ladvin_snapshot", {
+    description: "Machine-readable ladvin state for the ladvin panel UI. Not needed in conversation; use ladvin_status, ladvin_team_inbox or ladvin_burn instead.",
+    inputSchema: {}
+  }, guarded(async () => {
+    const now = Date.now();
+    const burnRows = (readBurnCache(10 * 60000) ?? []).filter((r) => r.key !== "unreachable");
+    const tasksByHost = new Map;
+    for (const { host, task } of await loc.projectTasks())
+      tasksByHost.set(host, [...tasksByHost.get(host) ?? [], task]);
+    const hosts = loadHosts().map((h) => {
+      const account = burnRows.find((r) => r.hosts.includes(h.alias))?.label;
+      const reachable = !!ctx.pool.get(h.alias).info;
+      return { alias: h.alias, ...account ? { account } : {}, reachable };
+    });
+    const tasks = [];
+    for (const [host, list] of tasksByHost)
+      for (const t of list)
+        tasks.push({
+          taskId: t.taskId,
+          host,
+          state: t.state,
+          kind: t.kind ?? "delegate",
+          preset: t.preset,
+          ...t.team ? { role: t.team.role } : {},
+          ...t.startedAt ? { elapsedMs: (t.endedAt ? Date.parse(t.endedAt) : now) - Date.parse(t.startedAt) } : {},
+          tokensIn: t.usage.input,
+          tokensOut: t.usage.output,
+          ...t.lastActivity ? { lastActivity: t.lastActivity } : {},
+          ...t.failReason ? { failReason: t.failReason } : {}
+        });
+    const active = ctx.store.active();
+    const team = active ? {
+      teamId: active.teamId,
+      goal: active.goal,
+      members: active.members.map((m) => ({ role: m.role, host: m.host, taskId: m.taskId })),
+      tasks: active.tasks,
+      unread: ctx.store.unread(active.teamId).length,
+      recent: ctx.store.all(active.teamId).slice(-8).map((e) => ({ at: e.at, role: e.role, host: e.host, text: e.text }))
+    } : null;
+    const pct = (w) => {
+      const l = liveWindow(w);
+      return l ? Math.round(l.utilization * 100) : undefined;
+    };
+    const burn = burnRows.map((r) => {
+      const five = pct(r.fiveHour);
+      const seven = pct(r.sevenDay);
+      return {
+        label: r.label,
+        hosts: r.hosts,
+        ...five !== undefined ? { fiveHourPct: five } : {},
+        ...seven !== undefined ? { sevenDayPct: seven } : {},
+        running: r.agentsRunning,
+        over: r.over
+      };
+    });
+    const snap = { at: new Date(now).toISOString(), hosts, tasks, team, burn };
+    return ok(JSON.stringify(snap));
+  }));
+}
+
 // packages/hub/src/setup/add-host.ts
 import { createHash as createHash3 } from "node:crypto";
 import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync8, writeFileSync as writeFileSync7 } from "node:fs";
 import { join as join8 } from "node:path";
-var AGENTD_VERSION = "0.3.1";
+var AGENTD_VERSION = "0.3.2";
 var RELEASE_REPO = "HoangMinh-03/Ladvin";
 var shq2 = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 function parseUname(out) {
@@ -21384,7 +21447,7 @@ ${store.unread(team.teamId).length} unread message(s); read them with ladvin_tea
 }
 
 // packages/hub/src/hub.ts
-var HUB_VERSION = "0.3.1";
+var HUB_VERSION = "0.3.2";
 function createHub(o) {
   const server = new McpServer({ name: "ladvin", version: HUB_VERSION });
   const pool = new ConnectionPool(o.owner, o.transportFor);
@@ -21396,6 +21459,7 @@ function createHub(o) {
   registerTeamTools(server, { owner: o.owner, pool, store, poller, budgetGuard });
   registerBurnTools(server, { pool });
   registerAttachTools(server, { owner: o.owner, pool });
+  registerSnapshotTool(server, { owner: o.owner, pool, store });
   if (store.active())
     poller.start();
   return {

@@ -26,6 +26,7 @@ test("the committed node bundle starts and exposes exactly the ladvin tools", as
     "ladvin_hosts",
     "ladvin_remove_host",
     "ladvin_report",
+    "ladvin_snapshot",
     "ladvin_status",
     "ladvin_stop_all",
     "ladvin_team_end",

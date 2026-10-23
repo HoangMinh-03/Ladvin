@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-const host = (alias: string): HostConfig => ({ alias, os: "linux", arch: "x64", maxPreset: "worker", agentdVersion: "0.3.1", addedAt: "t" });
+const host = (alias: string): HostConfig => ({ alias, os: "linux", arch: "x64", maxPreset: "worker", agentdVersion: "0.3.2", addedAt: "t" });
 const result = (o: Partial<BurnGetResult> = {}): BurnGetResult => ({
   account: { accountUuid: "acc-1", email: "dev@example.com" },
   rateLimit: null,
