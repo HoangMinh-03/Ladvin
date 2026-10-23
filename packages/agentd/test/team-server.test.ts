@@ -182,8 +182,9 @@ test("a shared file is staged at share time; later changes to the original do no
   const msgs = await pullUntil(c, (m) => m.length > 0);
   const f = msgs[0] as any;
   expect(f.staged).toBeDefined();
+  // the teammate swaps the original right after sharing; wait for that before comparing
+  await until(async () => (readFileSync(join(cwd, "out.txt"), "utf8") === "swapped-later" ? true : undefined));
   expect(readFileSync(f.staged, "utf8")).toBe("original");
-  expect(readFileSync(join(cwd, "out.txt"), "utf8")).toBe("swapped-later");
 }, 20000);
 
 test("acked entries are compacted out of the outbox file", async () => {
