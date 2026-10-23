@@ -59,3 +59,13 @@ Re-check against the docs when building Plan 2.
 - **Plan 2, team mode:** mid-turn injection works, so a teammate gets local's message within one tool call. No turn-boundary queueing is needed.
 - **Plan 3 / spec §10:** `rate_limit_event` exposes **real utilization** of the 5-hour and 7-day windows per account. The burn meter can show true "% of window used" from the most recent event of any agent on that account, instead of only a user-configured budget. Update the spec's honesty rule when Plan 3 starts.
 - **Noise:** a remote `claude` loads that host user's hooks, plugins and CLAUDE.md (a SessionStart hook fired here). This is acceptable; it is their environment. ladvin's appended system prompt must still win, which is checked in Task 11.
+
+## First real run (kata54, Ubuntu 22.04 x64, 2026-10-23)
+
+Real Claude Code ran with `--plugin-dir`, and the agentd binary was compiled locally (`LADVIN_AGENTD_BINARY_DIR`).
+
+- **add-host:** `claude` was only on the login-shell PATH (`~/.local/bin`). The probe found it and stored the full login PATH in `agentd.json`. `~/.ladvin` is mode 700. The clock offset was -2 ms.
+- **observer task (`t_8caebb0c`):** reported OS release, uptime and the top 5 processes by memory in about 15 s. The agent called `ladvin_report` itself (status `success`, no `reportMissing`), so the presets now allow `mcp__ladvin`. The report arrived wrapped in `<ladvin-remote-content>`. The coordinator used the Sonnet model.
+- **worker task (`t_e07408bf`):** wrote `disk.txt`, attached it, and reported. `ladvin_fetch` saved identical bytes to `.ladvin/inbox/t_e07408bf/disk.txt` on Windows. The coordinator used the Haiku model.
+- **tmux:** sessions `ladvin-agentd` and `ladvin-<task>` exist on the host. The view closes 10 minutes after the task ends.
+- **Surprises:** none blocking. ladvin's appended system prompt held, even though the host user has their own Claude setup.
