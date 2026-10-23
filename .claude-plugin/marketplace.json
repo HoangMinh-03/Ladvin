@@ -1,0 +1,12 @@
+{
+  "name": "ladvin",
+  "owner": { "name": "ladvin contributors" },
+  "description": "ladvin — lazy dev plugin: Claude Code agents on your SSH servers, driven from your local session.",
+  "plugins": [
+    {
+      "name": "ladvin",
+      "source": "./",
+      "description": "Delegate work to Claude Code agents on your SSH servers."
+    }
+  ]
+}
