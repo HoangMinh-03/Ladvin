@@ -163,3 +163,18 @@ test("stop_all cancels running tasks", async () => {
   expect(r.text).toContain("1");
   expect((await call(c, "ladvin_status", { task_id: id })).text).toContain("cancelled");
 }, 40000);
+
+test("hosts lists reachability and remove_host refuses while agents run", async () => {
+  env = script([{ sleepMs: 10000 }]);
+  const c = await hub();
+  await call(c, "ladvin_delegate", { host: "local1", task: "x" });
+  const hosts = await call(c, "ladvin_hosts");
+  expect(hosts.text).toContain("local1");
+  expect(hosts.text).toContain("reachable");
+  expect(hosts.text).toContain("1 running");
+  const rm = await call(c, "ladvin_remove_host", { alias: "local1" });
+  expect(rm.isError).toBe(true);
+  expect(rm.text).toContain("force");
+  expect((await call(c, "ladvin_remove_host", { alias: "local1", force: true })).isError).toBe(false);
+  expect((await call(c, "ladvin_hosts")).text).not.toContain("local1");
+}, 40000);
