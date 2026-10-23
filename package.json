@@ -2,11 +2,12 @@
   "name": "ladvin-workspace",
   "private": true,
   "type": "module",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "workspaces": ["packages/*"],
   "scripts": {
     "test": "bun test packages",
     "test:e2e": "bun test ./test/e2e --timeout 600000",
+    "test:panel": "bun scripts/test-panel.ts",
     "build:hub": "bun build packages/hub/src/main.ts --target=node --outfile dist/ladvin-mcp.js && bun build packages/hub/src/hook-main.ts --target=node --outfile dist/ladvin-hook.js && bun build packages/hub/src/statusline.ts --target=node --outfile dist/ladvin-statusline.js",
     "build:agentd": "bun build --compile packages/agentd/src/main.ts --outfile build/ladvin-agentd"
   },

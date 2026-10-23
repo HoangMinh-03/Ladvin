@@ -5,7 +5,7 @@ description: Use when work should run on one of the user's SSH servers rather th
 
 # Working with ladvin remote agents
 
-ladvin lets you hand a task to a Claude Code agent running headless on an SSH host the user registered (`/ladvin:hosts` lists them).
+ladvin lets you hand a task to a Claude Code agent running headless on an SSH host the user registered (the `/ladvin` panel lists them; `ladvin_hosts` from a tool call).
 
 ## When to delegate
 

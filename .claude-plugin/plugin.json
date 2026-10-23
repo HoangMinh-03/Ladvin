@@ -1,6 +1,6 @@
 {
   "name": "ladvin",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "ladvin — lazy dev plugin. Let the Claude Code session on your machine delegate work to, and team up with, Claude Code agents on your SSH servers.",
   "author": {
     "name": "ladvin contributors"
@@ -15,5 +15,6 @@
   ],
   "icon": ".claude-plugin/icon.png",
   "repository": "https://github.com/HoangMinh-03/Ladvin",
-  "homepage": "https://github.com/HoangMinh-03/Ladvin"
+  "homepage": "https://github.com/HoangMinh-03/Ladvin",
+  "types": "./types/index.d.ts"
 }

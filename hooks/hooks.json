@@ -3,13 +3,28 @@
     "PostToolUse": [
       {
         "matcher": "*",
-        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/ladvin-hook.js\" post", "timeout": 10 }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/ladvin-hook.js\" post",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/ladvin-hook.js\" stop", "timeout": 10 }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/ladvin-hook.js\" stop",
+            "timeout": 10
+          }
+        ]
       }
     ]
-  }
+  },
+  "modules": [
+    "./panel.tsx"
+  ]
 }

@@ -29,11 +29,22 @@ Each server uses whatever Claude account is logged in there. It can be the same 
 
 ## Quick start
 
+There is one command:
+
 ```
-/ladvin:add-host my-server
+/ladvin
 ```
 
-This finds `claude` and `tmux` on the server (including nvm and `~/.local/bin` installs), checks that `claude` is logged in, and installs the small `ladvin-agentd` daemon into `~/.ladvin/`. Running it again later upgrades the daemon. It replaces the daemon only if the binary actually changed, and restarts it only when no agents are running.
+It opens the **ladvin panel** beside the chat:
+
+- your servers from `~/.ssh/config`, each with a **+** button to add it;
+- the remote agents, each with **Watch** and **Stop** buttons;
+- the team chat, with your messages and theirs;
+- quota per account.
+
+Adding a server finds `claude` and `tmux` there (including nvm and `~/.local/bin` installs), checks that `claude` is logged in, and installs the small `ladvin-agentd` daemon into `~/.ladvin/`. Adding it again later upgrades the daemon. The daemon is replaced only if the binary actually changed, and restarted only when no agents are running.
+
+Everything else you just ask for in plain language.
 
 Then ask Claude in plain language:
 
@@ -44,16 +55,19 @@ Then ask Claude in plain language:
   - Shared files land in `.ladvin/shared/<team>/`.
   - `ladvin_team_resume` reconnects a later session to a running team.
 
-## Commands
+## The panel
 
-| Command | What it does |
+| Part | What you see and can do |
 |---|---|
-| `/ladvin:add-host <alias> [observer\|worker\|yolo]` | Register or upgrade a server. The optional preset is its maximum. |
-| `/ladvin:hosts` | Health, daemon version and running agents per server |
-| `/ladvin:burn` | Burn meter per account |
-| `/ladvin:attach <task\|all>` | Live view of remote agents |
-| `/ladvin:stop-all` | Kill switch: cancel every agent on every server |
-| `/ladvin:remove-host <alias> [--force]` | Forget a server |
+| Servers | Reachable or not and which Claude account each one uses. Press **+ alias** to add a server from your SSH config. |
+| Chat | The team's conversation, plus **Watch** (open a live terminal view) and **End**. |
+| Tasks | Delegated work with state, time and tokens. **Watch** and **Stop** act on one task. |
+| Quota | 5-hour and 7-day utilization per account, once measured. |
+| Bottom row | **Refresh**, **Measure quota**, **Stop all** (the kill switch). |
+
+A line above the prompt appears only while agents run or teammates have written, and the status line shows the same. Toasts tell you when an agent finishes, a teammate writes, or a budget is crossed.
+
+Things the panel doesn't do, ask Claude: *"remove the host kata54"*, *"add kata28 with preset observer"*, *"set a budget of 80% for 5h"*.
 
 ## Presets
 
@@ -73,7 +87,7 @@ Remote agents run headless, so they can't ask for permission. Each agent runs un
 
 Set a budget with `ladvin_budget({account, five_hour_pct?, seven_day_pct?, five_hour_tokens?, seven_day_tokens?})`. The account key comes from `ladvin_burn`; use `*` for all accounts. While an account is over budget, new delegations and teams on its hosts are refused.
 
-**Statusline:** the line shows the last snapshot (refreshed whenever ladvin checks budgets or you run `/ladvin:burn`; hidden after 10 minutes). Point Claude Code's `statusLine` at the bundled script for a one-line view (`ladvin ⚡ you@example.com 5h 23% · 7d 4% · 2 running`):
+**Statusline:** the line shows the last snapshot (refreshed whenever ladvin checks budgets or you press **Measure quota**; hidden after 10 minutes). Point Claude Code's `statusLine` at the bundled script for a one-line view (`ladvin ⚡ you@example.com 5h 23% · 7d 4% · 2 running`):
 
 ```json
 { "statusLine": { "type": "command", "command": "node <plugin dir>/dist/ladvin-statusline.js" } }
@@ -102,7 +116,7 @@ Set `LADVIN_TERMINAL=wezterm|tmux|terminal|print` to choose one yourself. A task
 
 - **`claude not found`:** install it on the server and run `claude` once there to log in, or pass `claude_path` to `ladvin_add_host`.
 - **No release reachable (offline servers, forks):** build the binaries yourself with `bun scripts/build-agentd.ts --out dist-bin` and set `LADVIN_AGENTD_BINARY_DIR=<path>/dist-bin`. Alternatively, point `LADVIN_RELEASE_REPO` at your fork.
-- **Runaway agents:** run `/ladvin:stop-all`. Idle team members also stop by themselves 15 minutes after your session goes away.
+- **Runaway agents:** press **Stop all** in the panel, or ask Claude to stop all ladvin agents. Idle team members also stop by themselves 15 minutes after your session goes away.
 
 ## Development
 
