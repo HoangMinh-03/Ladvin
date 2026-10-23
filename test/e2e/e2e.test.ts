@@ -128,3 +128,37 @@ test.skipIf(!dockerOk)("add-host, delegate with input, report, fetch, tmux views
   expect(sessions).toContain(`ladvin-${id}`);
   expect((await call("ladvin_hosts")).text).toContain("reachable");
 }, 300_000);
+
+test.skipIf(!dockerOk)("team over real ssh: plan, round trip, shared file both ways, end", async () => {
+  ssh(
+    `cat > ~/.fake-claude-script.json <<'EOF'\n${JSON.stringify([
+      { callTool: { name: "team_send", args: { text: "plan: watch the box" } } },
+      { result: "x" },
+      {
+        respond: [
+          { writeFile: { path: "obs.log", content: "obs" } },
+          { callTool: { name: "share_file", args: { path: "obs.log" } } },
+          { ifExists: ".ladvin/shared/probe.txt", then: [{ callTool: { name: "team_send", args: { text: "ack $INPUT (got probe)" } } }] },
+        ],
+      },
+    ])}\nEOF`,
+  );
+  const started = await call("ladvin_team_start", { goal: "e2e team", members: [{ host: ALIAS, role: "watcher" }] });
+  if (started.isError) console.error(started.text);
+  expect(started.isError).toBe(false);
+  const teamId = started.text.match(/team_[0-9a-f]{8}/)![0];
+  let inbox = "";
+  const waitFor = async (needle: string) => {
+    for (let i = 0; i < 20 && !inbox.includes(needle); i++) inbox += (await call("ladvin_team_inbox", { wait_seconds: 3 })).text;
+    expect(inbox).toContain(needle);
+  };
+  await waitFor("plan: watch the box");
+  const probe = join(project, "probe.txt");
+  writeFileSync(probe, "probe");
+  expect((await call("ladvin_team_send", { to: "watcher", text: "step 1", files: [probe] })).isError).toBe(false);
+  await waitFor("(got probe)");
+  await waitFor("shared file obs.log");
+  expect(readFileSync(join(project, ".ladvin", "shared", teamId, "obs.log"), "utf8")).toBe("obs");
+  expect((await call("ladvin_team_end", {})).isError).toBe(false);
+  ssh("rm -f ~/.fake-claude-script.json");
+}, 300_000);

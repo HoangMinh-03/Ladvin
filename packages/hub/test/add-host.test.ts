@@ -36,7 +36,7 @@ function fakeTransport(table: [string, { code?: number; stdout?: string; stderr?
   return { t, execs, uploads };
 }
 
-const connection = { connect: async () => ({ agentdVersion: "0.1.0", clockOffsetMs: 0 }), call: async () => ({}) } as any;
+const connection = { connect: async () => ({ agentdVersion: "0.2.0", clockOffsetMs: 0 }), call: async () => ({}) } as any;
 const fetchBinary = async () => "/cache/ladvin-agentd-linux-x64";
 
 // Output of the single host probe (PROBE in add-host.ts): login-shell view, install-dir candidates, plain view.
@@ -71,7 +71,7 @@ test("claude found only on the login-shell PATH is resolved and stored", async (
     ["command -v", { stdout: LOGIN_OK }],
   ]);
   const r = await addHost("box", { transport: t, connection, fetchBinary });
-  expect(r.host).toMatchObject({ alias: "box", os: "linux", arch: "x64", maxPreset: "worker", agentdVersion: "0.1.0" });
+  expect(r.host).toMatchObject({ alias: "box", os: "linux", arch: "x64", maxPreset: "worker", agentdVersion: "0.2.0" });
   const install = execs.find((c) => c.includes("agentd.json"))!;
   expect(install).toContain("/home/u/.local/bin/claude");
   expect(install).toContain("/home/u/.local/bin:/usr/bin");

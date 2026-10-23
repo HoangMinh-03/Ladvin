@@ -21,7 +21,7 @@ const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
 // MCP server that the remote claude process runs as its "ladvin" tool provider.
 export async function runAgentMcp(taskId: string): Promise<void> {
   const peer = await agentdPeer();
-  const server = new McpServer({ name: "ladvin", version: "0.1.0" });
+  const server = new McpServer({ name: "ladvin", version: "0.2.0" });
   const task = await peer.request<TaskInfo>("task.get", { taskId });
   if (task.kind === "team") registerTeamTools(server, peer, taskId);
   else registerDelegateTools(server, peer, taskId);

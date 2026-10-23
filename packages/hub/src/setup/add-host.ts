@@ -6,7 +6,7 @@ import type { ConnectInfo } from "../connection";
 import { type HostConfig, ladvinHome, saveHost } from "../state";
 import type { Transport } from "../transport";
 
-export const AGENTD_VERSION = "0.1.0";
+export const AGENTD_VERSION = "0.2.0";
 export const RELEASE_REPO = "OWNER/ladvin"; // set once the GitHub repo exists
 
 type Os = HostConfig["os"];

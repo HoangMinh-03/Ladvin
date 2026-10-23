@@ -20448,7 +20448,7 @@ ${lines.join(`
 import { createHash as createHash2 } from "node:crypto";
 import { existsSync as existsSync4, mkdirSync as mkdirSync4, writeFileSync as writeFileSync4 } from "node:fs";
 import { join as join5 } from "node:path";
-var AGENTD_VERSION = "0.1.0";
+var AGENTD_VERSION = "0.2.0";
 var RELEASE_REPO = "OWNER/ladvin";
 var shq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 function parseUname(out) {
@@ -20862,7 +20862,7 @@ ${store.unread(team.teamId).length} unread message(s); read them with ladvin_tea
 }
 
 // packages/hub/src/hub.ts
-var HUB_VERSION = "0.1.0";
+var HUB_VERSION = "0.2.0";
 function createHub(o) {
   const server = new McpServer({ name: "ladvin", version: HUB_VERSION });
   const pool = new ConnectionPool(o.owner, o.transportFor);
