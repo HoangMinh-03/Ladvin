@@ -15,7 +15,7 @@ async function serve(): Promise<void> {
   const cfg = loadConfig();
   const self = selfCommand();
   const store = new TaskStore();
-  const burn = new BurnState({ userHome: homedir() });
+  const burn = new BurnState({ userHome: process.env.LADVIN_USER_HOME || homedir() });
   const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   const runner = new Runner({
     store,

@@ -16,6 +16,8 @@ test("the committed node bundle starts and exposes exactly the ladvin tools", as
   rmSync(home, { recursive: true, force: true });
   expect(tools.map((t) => t.name).sort()).toEqual([
     "ladvin_add_host",
+    "ladvin_budget",
+    "ladvin_burn",
     "ladvin_cancel",
     "ladvin_delegate",
     "ladvin_fetch",

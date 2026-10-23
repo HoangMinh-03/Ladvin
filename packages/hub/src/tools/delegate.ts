@@ -15,7 +15,8 @@ import type { ConnectionPool } from "../connection";
 import { ensureGitignore, loadHosts, projectStateDir } from "../state";
 import { wrapRemote } from "../untrusted";
 
-export type ToolCtx = { owner: Owner; pool: ConnectionPool };
+// budgetGuard returns a refusal message while the host's account is over budget (spec §10).
+export type ToolCtx = { owner: Owner; pool: ConnectionPool; budgetGuard?: (alias: string) => Promise<string | null> };
 type IndexEntry = { taskId: string; host: string };
 
 export const ok = (text: string) => ({ content: [{ type: "text" as const, text }] });
@@ -122,6 +123,8 @@ export function registerDelegateTools(server: McpServer, ctx: ToolCtx): void {
       if (PRESET_RANK[preset] > PRESET_RANK[h.maxPreset])
         throw new ToolError(`Preset ${preset} exceeds host max ${h.maxPreset} for ${h.alias}.`);
       for (const f of a.files ?? []) if (!existsSync(f)) throw new ToolError(`Local file not found: ${f}`);
+      const refusal = await ctx.budgetGuard?.(a.host);
+      if (refusal) throw new ToolError(refusal);
 
       const conn = pool.get(a.host);
       const { taskId, cwd } = await conn.call<TaskPrepareResult>("task.prepare", { owner, cwd: a.cwd, preset });

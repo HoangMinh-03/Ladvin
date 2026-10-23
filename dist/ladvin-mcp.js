@@ -19800,6 +19800,7 @@ var PRESET_RANK = { observer: 0, worker: 1, yolo: 2 };
 var TaskState = enumType(["queued", "running", "idle", "done", "failed", "cancelled"]);
 var Owner = objectType({ machineId: stringType().min(1), projectDir: stringType().min(1) });
 var Usage = objectType({ input: numberType(), output: numberType(), cacheRead: numberType(), cacheWrite: numberType() });
+var ZERO_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 var Artifact = objectType({ path: stringType(), size: numberType(), note: stringType().optional() });
 var Limits = objectType({ wallMs: numberType().positive(), maxTokens: numberType().positive().optional() });
 var DEFAULT_WALL_MS = 2 * 60 * 60 * 1000;
@@ -19901,7 +19902,130 @@ var AgentReportParams = objectType({
 });
 var AgentAttachParams = objectType({ taskId: stringType(), path: stringType(), note: stringType().optional() });
 // packages/protocol/src/usage.ts
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import { join } from "node:path";
 var WEEK_MS = 7 * 86400000;
+var billable = (u) => u.input + u.output + u.cacheWrite;
+function jsonlFiles(dir, out = []) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    const p = join(dir, e.name);
+    if (e.isDirectory())
+      jsonlFiles(p, out);
+    else if (e.isFile() && e.name.endsWith(".jsonl"))
+      out.push(p);
+  }
+  return out;
+}
+function mapUsage(u) {
+  return {
+    input: u?.input_tokens ?? 0,
+    output: u?.output_tokens ?? 0,
+    cacheRead: u?.cache_read_input_tokens ?? 0,
+    cacheWrite: u?.cache_creation_input_tokens ?? 0
+  };
+}
+function scanTranscripts(root, state, now) {
+  const seen = new Set(state.seen);
+  const events = [...state.events];
+  const files = {};
+  for (const f of jsonlFiles(root)) {
+    let size;
+    try {
+      size = statSync(f).size;
+    } catch {
+      continue;
+    }
+    let offset = state.files[f] ?? 0;
+    if (size < offset)
+      offset = 0;
+    if (size > offset) {
+      const buf = Buffer.alloc(size - offset);
+      try {
+        const fd = openSync(f, "r");
+        try {
+          readSync(fd, buf, 0, buf.length, offset);
+        } finally {
+          closeSync(fd);
+        }
+      } catch {
+        files[f] = offset;
+        continue;
+      }
+      const end = buf.lastIndexOf(10);
+      if (end >= 0) {
+        for (const l of buf.subarray(0, end).toString("utf8").split(`
+`)) {
+          if (!l.includes('"usage"'))
+            continue;
+          let o;
+          try {
+            o = JSON.parse(l);
+          } catch {
+            continue;
+          }
+          const id = o?.message?.id;
+          if (o?.type !== "assistant" || !o.message?.usage || !id || seen.has(id))
+            continue;
+          const ts = Date.parse(o.timestamp);
+          if (!Number.isFinite(ts) || ts < now - WEEK_MS)
+            continue;
+          seen.add(id);
+          events.push({ ts, id, usage: mapUsage(o.message.usage) });
+        }
+        offset += end + 1;
+      }
+    }
+    files[f] = offset;
+  }
+  const kept = events.filter((e) => e.ts >= now - WEEK_MS);
+  const keptIds = new Set(kept.map((e) => e.id));
+  return { files, seen: [...seen].filter((id) => keptIds.has(id)), events: kept };
+}
+var add = (a, b) => ({
+  input: a.input + b.input,
+  output: a.output + b.output,
+  cacheRead: a.cacheRead + b.cacheRead,
+  cacheWrite: a.cacheWrite + b.cacheWrite
+});
+function windowSums(events, now) {
+  let last5h = { ...ZERO_USAGE };
+  let last7d = { ...ZERO_USAGE };
+  let last15 = 0;
+  for (const e of events) {
+    const age = now - e.ts;
+    if (age < 0 || age > WEEK_MS)
+      continue;
+    last7d = add(last7d, e.usage);
+    if (age <= 5 * 3600000)
+      last5h = add(last5h, e.usage);
+    if (age <= 15 * 60000)
+      last15 += billable(e.usage);
+  }
+  return { last5h, last7d, billablePerMin15: last15 / 15 };
+}
+function readAccount(home) {
+  const f = join(home, ".claude.json");
+  if (!existsSync(f))
+    return null;
+  try {
+    const a = JSON.parse(readFileSync(f, "utf8"))?.oauthAccount;
+    if (!a?.accountUuid)
+      return null;
+    return {
+      accountUuid: String(a.accountUuid),
+      ...a.emailAddress ? { email: String(a.emailAddress) } : {},
+      ...a.displayName ? { name: String(a.displayName) } : {}
+    };
+  } catch {
+    return null;
+  }
+}
 // packages/hub/src/connection.ts
 class HostConnection {
   alias;
@@ -19989,20 +20113,20 @@ class ConnectionPool {
 
 // packages/hub/src/team/poller.ts
 import { createHash as createHash2, randomBytes as randomBytes2 } from "node:crypto";
-import { appendFileSync as appendFileSync3, existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync2, unlinkSync, writeFileSync as writeFileSync3 } from "node:fs";
-import { extname, join as join3, posix } from "node:path";
+import { appendFileSync as appendFileSync3, existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync4, renameSync as renameSync2, unlinkSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { extname, join as join4, posix } from "node:path";
 
 // packages/hub/src/state.ts
 import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join as join2 } from "node:path";
 function ladvinHome() {
-  return process.env.LADVIN_HOME || join(homedir(), ".ladvin");
+  return process.env.LADVIN_HOME || join2(homedir(), ".ladvin");
 }
-var hostsFile = () => join(ladvinHome(), "hosts.json");
+var hostsFile = () => join2(ladvinHome(), "hosts.json");
 function loadHosts() {
-  return existsSync(hostsFile()) ? JSON.parse(readFileSync(hostsFile(), "utf8")) : [];
+  return existsSync2(hostsFile()) ? JSON.parse(readFileSync2(hostsFile(), "utf8")) : [];
 }
 function writeHosts(hosts) {
   mkdirSync(ladvinHome(), { recursive: true });
@@ -20015,9 +20139,9 @@ function removeHost(alias) {
   writeHosts(loadHosts().filter((x) => x.alias !== alias));
 }
 function machineId() {
-  const f = join(ladvinHome(), "machine-id");
-  if (existsSync(f))
-    return readFileSync(f, "utf8").trim();
+  const f = join2(ladvinHome(), "machine-id");
+  if (existsSync2(f))
+    return readFileSync2(f, "utf8").trim();
   mkdirSync(ladvinHome(), { recursive: true });
   const id = randomUUID();
   writeFileSync(f, id);
@@ -20025,15 +20149,15 @@ function machineId() {
 }
 function projectStateDir(projectDir) {
   const h = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
-  const dir = join(ladvinHome(), "state", h);
+  const dir = join2(ladvinHome(), "state", h);
   mkdirSync(dir, { recursive: true });
   return dir;
 }
 function ensureGitignore(projectDir) {
-  const f = join(projectDir, ".gitignore");
-  if (!existsSync(f))
+  const f = join2(projectDir, ".gitignore");
+  if (!existsSync2(f))
     return;
-  const cur = readFileSync(f, "utf8");
+  const cur = readFileSync2(f, "utf8");
   if (cur.split(/\r?\n/).some((l) => l.trim() === ".ladvin/" || l.trim() === ".ladvin"))
     return;
   appendFileSync(f, (cur.endsWith(`
@@ -20044,8 +20168,8 @@ function ensureGitignore(projectDir) {
 
 // packages/hub/src/team/store.ts
 import { randomBytes } from "node:crypto";
-import { appendFileSync as appendFileSync2, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join2 } from "node:path";
+import { appendFileSync as appendFileSync2, existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync3, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join3 } from "node:path";
 
 // packages/hub/src/untrusted.ts
 function wrapRemote(host, agent, body) {
@@ -20069,23 +20193,23 @@ class TeamStore {
     this.root = projectStateDir(projectDir);
   }
   dir(teamId) {
-    return join2(this.root, "teams", teamId);
+    return join3(this.root, "teams", teamId);
   }
-  activeFile = () => join2(this.root, "active-team");
+  activeFile = () => join3(this.root, "active-team");
   get(teamId) {
-    const f = join2(this.dir(teamId), "team.json");
-    return existsSync2(f) ? JSON.parse(readFileSync2(f, "utf8")) : undefined;
+    const f = join3(this.dir(teamId), "team.json");
+    return existsSync3(f) ? JSON.parse(readFileSync3(f, "utf8")) : undefined;
   }
   active() {
-    if (!existsSync2(this.activeFile()))
+    if (!existsSync3(this.activeFile()))
       return;
-    const t = this.get(readFileSync2(this.activeFile(), "utf8").trim());
+    const t = this.get(readFileSync3(this.activeFile(), "utf8").trim());
     return t?.status === "active" ? t : undefined;
   }
   latest() {
-    if (!existsSync2(this.activeFile()))
+    if (!existsSync3(this.activeFile()))
       return;
-    return this.get(readFileSync2(this.activeFile(), "utf8").trim());
+    return this.get(readFileSync3(this.activeFile(), "utf8").trim());
   }
   create(goal, members) {
     const cur = this.active();
@@ -20106,7 +20230,7 @@ class TeamStore {
   }
   save(team) {
     mkdirSync2(this.dir(team.teamId), { recursive: true });
-    writeJson(join2(this.dir(team.teamId), "team.json"), team);
+    writeJson(join3(this.dir(team.teamId), "team.json"), team);
   }
   end(teamId) {
     const t = this.get(teamId);
@@ -20114,10 +20238,10 @@ class TeamStore {
       this.save({ ...t, status: "ended", endedAt: new Date().toISOString() });
   }
   all(teamId) {
-    const f = join2(this.dir(teamId), "inbox.jsonl");
-    if (!existsSync2(f))
+    const f = join3(this.dir(teamId), "inbox.jsonl");
+    if (!existsSync3(f))
       return [];
-    return readFileSync2(f, "utf8").split(`
+    return readFileSync3(f, "utf8").split(`
 `).filter(Boolean).map((l) => JSON.parse(l));
   }
   has(teamId, id) {
@@ -20127,13 +20251,13 @@ class TeamStore {
     if (this.has(teamId, e.id))
       return false;
     mkdirSync2(this.dir(teamId), { recursive: true });
-    appendFileSync2(join2(this.dir(teamId), "inbox.jsonl"), JSON.stringify(e) + `
+    appendFileSync2(join3(this.dir(teamId), "inbox.jsonl"), JSON.stringify(e) + `
 `);
     return true;
   }
   cursor(teamId) {
-    const f = join2(this.dir(teamId), "read-cursor");
-    return existsSync2(f) ? Number(readFileSync2(f, "utf8")) || 0 : 0;
+    const f = join3(this.dir(teamId), "read-cursor");
+    return existsSync3(f) ? Number(readFileSync3(f, "utf8")) || 0 : 0;
   }
   unread(teamId) {
     return this.all(teamId).slice(this.cursor(teamId));
@@ -20141,7 +20265,7 @@ class TeamStore {
   markReadTo(teamId, n) {
     const next = Math.max(this.cursor(teamId), n);
     mkdirSync2(this.dir(teamId), { recursive: true });
-    writeJson(join2(this.dir(teamId), "read-cursor"), next);
+    writeJson(join3(this.dir(teamId), "read-cursor"), next);
   }
   markRead(teamId) {
     this.markReadTo(teamId, this.all(teamId).length);
@@ -20154,7 +20278,7 @@ class TeamStore {
     return entries;
   }
   lockFile() {
-    return join2(this.root, "poller.lock");
+    return join3(this.root, "poller.lock");
   }
 }
 function applyOp(tasks, op, _by) {
@@ -20205,9 +20329,9 @@ function safeName(name) {
 function uniquePath(dir, name) {
   const ext = extname(name);
   const stem = name.slice(0, name.length - ext.length);
-  let p = join3(dir, name);
-  for (let i = 1;existsSync3(p); i++)
-    p = join3(dir, `${stem}-${i}${ext}`);
+  let p = join4(dir, name);
+  for (let i = 1;existsSync4(p); i++)
+    p = join4(dir, `${stem}-${i}${ext}`);
   return p;
 }
 
@@ -20240,7 +20364,7 @@ class TeamPoller {
   tryLock() {
     const f = this.o.store.lockFile();
     try {
-      const cur = JSON.parse(readFileSync3(f, "utf8"));
+      const cur = JSON.parse(readFileSync4(f, "utf8"));
       if (cur.token !== this.token && Date.now() - cur.at < LOCK_STALE_MS)
         return false;
     } catch {}
@@ -20252,7 +20376,7 @@ class TeamPoller {
   releaseLock() {
     const f = this.o.store.lockFile();
     try {
-      if (JSON.parse(readFileSync3(f, "utf8")).token === this.token)
+      if (JSON.parse(readFileSync4(f, "utf8")).token === this.token)
         unlinkSync(f);
     } catch {}
   }
@@ -20298,17 +20422,17 @@ class TeamPoller {
     const team = this.o.store.get(teamId);
     if (m.kind === "file") {
       const member = team.members.find((x) => x.taskId === m.taskId);
-      const dir = join3(this.o.projectDir, ".ladvin", "shared", teamId);
+      const dir = join4(this.o.projectDir, ".ladvin", "shared", teamId);
       mkdirSync3(dir, { recursive: true });
       const local = uniquePath(dir, safeName(m.name));
       const remote = m.staged ?? posix.join((member?.cwd ?? "").replace(/\\/g, "/"), m.path);
       await this.o.pool.transport(host).download(remote, local);
-      const got = createHash2("sha256").update(readFileSync3(local)).digest("hex");
+      const got = createHash2("sha256").update(readFileSync4(local)).digest("hex");
       if (got !== m.sha256) {
         unlinkSync(local);
         throw new Error("checksum mismatch, file discarded");
       }
-      appendFileSync3(join3(dir, "manifest.jsonl"), JSON.stringify({ name: m.name, file: local, from: `${m.role}@${host}`, size: m.size, sha256: m.sha256, note: m.note, time: new Date().toISOString() }) + `
+      appendFileSync3(join4(dir, "manifest.jsonl"), JSON.stringify({ name: m.name, file: local, from: `${m.role}@${host}`, size: m.size, sha256: m.sha256, note: m.note, time: new Date().toISOString() }) + `
 `);
       ensureGitignore(this.o.projectDir);
       return `shared file ${m.name} (${m.size} bytes) → ${local}${m.note ? ` — ${m.note}` : ""}`;
@@ -20323,9 +20447,165 @@ async function syncTasks(pool, team, tasks) {
   await Promise.allSettled([...new Set(team.members.map((m) => m.host))].map((h) => pool.get(h).call("team.syncTasks", { teamId: team.teamId, tasks })));
 }
 
+// packages/hub/src/tools/burn.ts
+import { homedir as homedir2 } from "node:os";
+
+// packages/hub/src/burn/aggregate.ts
+import { existsSync as existsSync6, mkdirSync as mkdirSync5, readFileSync as readFileSync6, renameSync as renameSync3, writeFileSync as writeFileSync5 } from "node:fs";
+import { join as join6 } from "node:path";
+
+// packages/hub/src/burn/budget.ts
+import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join5 } from "node:path";
+var file = () => join5(ladvinHome(), "budget.json");
+function loadBudgets() {
+  try {
+    return existsSync5(file()) ? JSON.parse(readFileSync5(file(), "utf8")) : {};
+  } catch {
+    return {};
+  }
+}
+function saveBudget(key, b) {
+  const all = loadBudgets();
+  if (b)
+    all[key] = b;
+  else
+    delete all[key];
+  mkdirSync4(ladvinHome(), { recursive: true });
+  writeFileSync4(file(), JSON.stringify(all, null, 2));
+}
+function budgetFor(key) {
+  const all = loadBudgets();
+  return all[key] ?? all["*"];
+}
+
+// packages/hub/src/burn/aggregate.ts
+var add2 = (a, b) => ({
+  input: a.input + b.input,
+  output: a.output + b.output,
+  cacheRead: a.cacheRead + b.cacheRead,
+  cacheWrite: a.cacheWrite + b.cacheWrite
+});
+function readJson(f) {
+  try {
+    return existsSync6(f) ? JSON.parse(readFileSync6(f, "utf8")) : undefined;
+  } catch {
+    return;
+  }
+}
+function writeJson2(f, v) {
+  mkdirSync5(ladvinHome(), { recursive: true });
+  const tmp = `${f}.${process.pid}.tmp`;
+  writeFileSync5(tmp, JSON.stringify(v));
+  renameSync3(tmp, f);
+}
+function localBurn(userHome) {
+  const f = join6(ladvinHome(), "local-usage-scan.json");
+  const now = Date.now();
+  const scan = scanTranscripts(join6(userHome, ".claude", "projects"), readJson(f) ?? { files: {}, seen: [], events: [] }, now);
+  writeJson2(f, scan);
+  return { account: readAccount(userHome), rateLimit: null, usage: windowSums(scan.events, now), agents: [] };
+}
+var newer = (a, b) => !a ? b : !b ? a : Date.parse(b.observedAt) > Date.parse(a.observedAt) ? b : a;
+async function collectBurn(o) {
+  const results = await Promise.allSettled(o.hosts.map((h) => o.pool.get(h.alias).call("burn.get", {}, 1e4)));
+  const rows = new Map;
+  const rowFor = (key, label) => {
+    let r = rows.get(key);
+    if (!r)
+      rows.set(key, r = { key, label, hosts: [], includesLocal: false, last5h: { ...ZERO_USAGE }, last7d: { ...ZERO_USAGE }, billablePerMin15: 0, agentsRunning: 0, unreachable: [], over: [] });
+    return r;
+  };
+  const merge = (r, b) => {
+    r.last5h = add2(r.last5h, b.usage.last5h);
+    r.last7d = add2(r.last7d, b.usage.last7d);
+    r.billablePerMin15 += b.usage.billablePerMin15;
+    r.agentsRunning += b.agents.filter((a) => a.state === "running" || a.state === "idle").length;
+    if (b.rateLimit) {
+      const at = b.rateLimit.observedAt;
+      r.fiveHour = newer(r.fiveHour, b.rateLimit.fiveHour && { ...b.rateLimit.fiveHour, observedAt: at });
+      r.sevenDay = newer(r.sevenDay, b.rateLimit.sevenDay && { ...b.rateLimit.sevenDay, observedAt: at });
+    }
+  };
+  const unreachable = [];
+  results.forEach((res, i) => {
+    const alias = o.hosts[i].alias;
+    if (res.status === "rejected")
+      return void unreachable.push(alias);
+    const b = res.value;
+    const r = b.account ? rowFor(b.account.accountUuid, b.account.email ?? b.account.name ?? b.account.accountUuid) : rowFor(`host:${alias}`, `${alias} (account unknown)`);
+    r.hosts.push(alias);
+    merge(r, b);
+  });
+  const local = localBurn(o.local.userHome);
+  const lr = local.account ? rowFor(local.account.accountUuid, local.account.email ?? local.account.name ?? local.account.accountUuid) : rowFor("local", "this machine (account unknown)");
+  lr.includesLocal = true;
+  merge(lr, local);
+  if (unreachable.length) {
+    const r = rowFor("unreachable", "unreachable hosts");
+    r.unreachable = unreachable;
+  }
+  for (const r of rows.values()) {
+    const b = budgetFor(r.key);
+    r.over = b ? overBudget(r, b) : [];
+  }
+  return [...rows.values()];
+}
+var pct = (u) => `${Math.round(u * 100)}%`;
+function overBudget(row, b) {
+  const out = [];
+  if (b.fiveHourPct !== undefined && row.fiveHour && row.fiveHour.utilization * 100 >= b.fiveHourPct)
+    out.push(`5h ${pct(row.fiveHour.utilization)} ≥ ${b.fiveHourPct}%`);
+  if (b.sevenDayPct !== undefined && row.sevenDay && row.sevenDay.utilization * 100 >= b.sevenDayPct)
+    out.push(`7d ${pct(row.sevenDay.utilization)} ≥ ${b.sevenDayPct}%`);
+  if (b.fiveHourTokens !== undefined && billable(row.last5h) >= b.fiveHourTokens)
+    out.push(`5h tokens ${billable(row.last5h)} ≥ ${b.fiveHourTokens}`);
+  if (b.sevenDayTokens !== undefined && billable(row.last7d) >= b.sevenDayTokens)
+    out.push(`7d tokens ${billable(row.last7d)} ≥ ${b.sevenDayTokens}`);
+  return out;
+}
+var n = (x) => x >= 1e6 ? `${(x / 1e6).toFixed(1)}M` : x >= 1000 ? `${(x / 1000).toFixed(1)}k` : String(Math.round(x));
+function ago(iso) {
+  const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  return m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+}
+function windowText(name, w) {
+  if (!w)
+    return `${name} —`;
+  const reset = new Date(w.resetsAt * 1000);
+  return `${name} ${pct(w.utilization)} (resets ${reset.toLocaleString()}, seen ${ago(w.observedAt)})`;
+}
+function renderBurn(rows) {
+  const out = [];
+  for (const r of rows) {
+    if (r.key === "unreachable") {
+      out.push(`⚠ unreachable: ${r.unreachable.join(", ")}`);
+      continue;
+    }
+    const where = [...r.hosts, ...r.includesLocal ? ["this machine"] : []].join(", ");
+    out.push(`${r.label} — ${where}`);
+    out.push(`  ${windowText("5h", r.fiveHour)} · ${windowText("7d", r.sevenDay)}`);
+    out.push(`  tokens 5h ${n(billable(r.last5h))} billable (cache read ${n(r.last5h.cacheRead)}) · 7d ${n(billable(r.last7d))} (cache read ${n(r.last7d.cacheRead)}) · now ${n(r.billablePerMin15)}/min`);
+    out.push(`  ladvin agents running: ${r.agentsRunning}${r.over.length ? `  ⚠ over budget: ${r.over.join(", ")}` : ""}`);
+  }
+  out.push("", "Utilization is what Claude last reported to a ladvin agent on that account; '—' means not observed yet.");
+  return out.join(`
+`);
+}
+var burnCacheFile = () => join6(ladvinHome(), "burn-cache.json");
+function writeBurnCache(rows) {
+  writeJson2(burnCacheFile(), { at: new Date().toISOString(), rows });
+}
+function readBurnCache(maxAgeMs) {
+  const c = readJson(burnCacheFile());
+  if (!c || Date.now() - Date.parse(c.at) > maxAgeMs)
+    return;
+  return c.rows;
+}
+
 // packages/hub/src/tools/delegate.ts
-import { existsSync as existsSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync4 } from "node:fs";
-import { basename, join as join4, posix as posix2 } from "node:path";
+import { existsSync as existsSync7, readFileSync as readFileSync7, writeFileSync as writeFileSync6 } from "node:fs";
+import { basename, join as join7, posix as posix2 } from "node:path";
 var ok = (text) => ({ content: [{ type: "text", text }] });
 var fail = (text) => ({ ...ok(text), isError: true });
 
@@ -20341,14 +20621,14 @@ function guarded(fn) {
   };
 }
 function indexFile(projectDir) {
-  return join4(projectStateDir(projectDir), "tasks.json");
+  return join7(projectStateDir(projectDir), "tasks.json");
 }
 function loadIndex(projectDir) {
   const f = indexFile(projectDir);
-  return existsSync4(f) ? JSON.parse(readFileSync4(f, "utf8")) : [];
+  return existsSync7(f) ? JSON.parse(readFileSync7(f, "utf8")) : [];
 }
 function addToIndex(projectDir, e) {
-  writeFileSync4(indexFile(projectDir), JSON.stringify([...loadIndex(projectDir), e], null, 2));
+  writeFileSync6(indexFile(projectDir), JSON.stringify([...loadIndex(projectDir), e], null, 2));
 }
 function elapsed(t) {
   if (!t.startedAt)
@@ -20423,8 +20703,11 @@ function registerDelegateTools(server, ctx) {
     if (PRESET_RANK[preset] > PRESET_RANK[h.maxPreset])
       throw new ToolError(`Preset ${preset} exceeds host max ${h.maxPreset} for ${h.alias}.`);
     for (const f of a.files ?? [])
-      if (!existsSync4(f))
+      if (!existsSync7(f))
         throw new ToolError(`Local file not found: ${f}`);
+    const refusal = await ctx.budgetGuard?.(a.host);
+    if (refusal)
+      throw new ToolError(refusal);
     const conn = pool.get(a.host);
     const { taskId, cwd } = await conn.call("task.prepare", { owner, cwd: a.cwd, preset });
     addToIndex(owner.projectDir, { taskId, host: a.host });
@@ -20484,7 +20767,7 @@ ${inputs.map((p) => `- ${p}`).join(`
     if (!report.artifacts.some((x) => x.path === a.artifact))
       throw new ToolError(`No artifact "${a.artifact}" on ${a.task_id}. Available: ${report.artifacts.map((x) => x.path).join(", ") || "none"}`);
     const remotePath = posix2.isAbsolute(a.artifact) || /^[A-Za-z]:/.test(a.artifact) ? a.artifact : posix2.join(task.cwd.replace(/\\/g, "/"), a.artifact);
-    const local = join4(owner.projectDir, ".ladvin", "inbox", a.task_id, basename(a.artifact));
+    const local = join7(owner.projectDir, ".ladvin", "inbox", a.task_id, basename(a.artifact));
     await pool.transport(host).download(remotePath, local);
     ensureGitignore(owner.projectDir);
     return ok(`Saved ${a.artifact} to ${local}`);
@@ -20516,10 +20799,60 @@ ${lines.join(`
   }));
 }
 
+// packages/hub/src/tools/burn.ts
+var userHome = () => process.env.LADVIN_USER_HOME || homedir2();
+async function refreshBurn(pool) {
+  const rows = await collectBurn({ pool, hosts: loadHosts(), local: { userHome: userHome() } });
+  writeBurnCache(rows);
+  return rows;
+}
+function makeBudgetGuard(pool) {
+  return async (alias) => {
+    const rows = readBurnCache(60000) ?? await refreshBurn(pool);
+    const row = rows.find((r) => r.hosts.includes(alias));
+    if (!row?.over.length)
+      return null;
+    return `${row.label} is over its ladvin budget (${row.over.join(", ")}). Wait for the window to reset, or raise it with ladvin_budget({account: "${row.key}", …}) or clear it with ladvin_budget({account: "${row.key}", clear: true}).`;
+  };
+}
+function registerBurnTools(server, ctx) {
+  server.registerTool("ladvin_burn", {
+    description: "Fleet burn meter: per Claude account, window utilization (when observed), token usage, running ladvin agents, budgets.",
+    inputSchema: {}
+  }, guarded(async () => ok(renderBurn(await refreshBurn(ctx.pool)))));
+  server.registerTool("ladvin_budget", {
+    description: "Set or clear a budget for an account (key from ladvin_burn: account id, host:<alias>, or * for all). While over budget, new ladvin work on it is refused.",
+    inputSchema: {
+      account: stringType(),
+      five_hour_pct: numberType().min(0).max(100).optional(),
+      seven_day_pct: numberType().min(0).max(100).optional(),
+      five_hour_tokens: numberType().min(0).optional(),
+      seven_day_tokens: numberType().min(0).optional(),
+      clear: booleanType().optional()
+    }
+  }, guarded(async (a) => {
+    if (a.clear) {
+      saveBudget(a.account, null);
+      return ok(`Cleared the budget for ${a.account}.`);
+    }
+    const b = {
+      ...a.five_hour_pct !== undefined ? { fiveHourPct: a.five_hour_pct } : {},
+      ...a.seven_day_pct !== undefined ? { sevenDayPct: a.seven_day_pct } : {},
+      ...a.five_hour_tokens !== undefined ? { fiveHourTokens: a.five_hour_tokens } : {},
+      ...a.seven_day_tokens !== undefined ? { sevenDayTokens: a.seven_day_tokens } : {}
+    };
+    if (!Object.keys(b).length)
+      throw new ToolError("Give at least one limit, or clear: true.");
+    saveBudget(a.account, b);
+    writeBurnCache([]);
+    return ok(`Budget for ${a.account}: ${JSON.stringify(b)}`);
+  }));
+}
+
 // packages/hub/src/setup/add-host.ts
 import { createHash as createHash3 } from "node:crypto";
-import { existsSync as existsSync5, mkdirSync as mkdirSync4, writeFileSync as writeFileSync5 } from "node:fs";
-import { join as join5 } from "node:path";
+import { existsSync as existsSync8, mkdirSync as mkdirSync6, writeFileSync as writeFileSync7 } from "node:fs";
+import { join as join8 } from "node:path";
 var AGENTD_VERSION = "0.2.0";
 var RELEASE_REPO = "OWNER/ladvin";
 var shq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -20552,14 +20885,14 @@ async function downloadBinary(os, arch, version, o = {}) {
   const name = `ladvin-agentd-${os}-${arch}`;
   const devDir = process.env.LADVIN_AGENTD_BINARY_DIR;
   if (devDir) {
-    const p = join5(devDir, name);
-    if (!existsSync5(p))
+    const p = join8(devDir, name);
+    if (!existsSync8(p))
       throw new Error(`${p} not found (LADVIN_AGENTD_BINARY_DIR)`);
     return p;
   }
-  const dir = join5(ladvinHome(), "cache", version);
-  const dest = join5(dir, name);
-  if (existsSync5(dest))
+  const dir = join8(ladvinHome(), "cache", version);
+  const dest = join8(dir, name);
+  if (existsSync8(dest))
     return dest;
   const f = o.fetchImpl ?? fetch;
   const base = `https://github.com/${RELEASE_REPO}/releases/download/v${version}`;
@@ -20577,8 +20910,8 @@ async function downloadBinary(os, arch, version, o = {}) {
   const bin = await get(`${base}/${name}`);
   if (createHash3("sha256").update(bin).digest("hex") !== expected)
     throw new Error(`checksum mismatch for ${name}`);
-  mkdirSync4(dir, { recursive: true });
-  writeFileSync5(dest, bin, { mode: 493 });
+  mkdirSync6(dir, { recursive: true });
+  writeFileSync7(dest, bin, { mode: 493 });
   return dest;
 }
 async function addHost(alias, o) {
@@ -20700,7 +21033,7 @@ function registerHostTools(server, ctx) {
 }
 
 // packages/hub/src/tools/team.ts
-import { existsSync as existsSync6, statSync } from "node:fs";
+import { existsSync as existsSync9, statSync as statSync2 } from "node:fs";
 import { basename as basename2, posix as posix4 } from "node:path";
 var DEFAULT_MAX_SHARE_BYTES = 200 * 1024 * 1024;
 var MAX_WAIT_SECONDS = 300;
@@ -20750,6 +21083,11 @@ function registerTeamTools(server, ctx) {
       if (PRESET_RANK[preset] > PRESET_RANK[h.maxPreset])
         throw new ToolError(`Preset ${preset} exceeds host max ${h.maxPreset} for ${h.alias}.`);
     }
+    for (const host of new Set(a.members.map((m) => m.host))) {
+      const refusal = await ctx.budgetGuard?.(host);
+      if (refusal)
+        throw new ToolError(refusal);
+    }
     const team = store.create(a.goal, []);
     const members = [];
     try {
@@ -20793,9 +21131,9 @@ Teammates report with team_send; read them with ladvin_team_inbox (new messages 
     const targets = recipients(team, a.to);
     const cap = Number(process.env.LADVIN_MAX_SHARE_BYTES) || DEFAULT_MAX_SHARE_BYTES;
     for (const f of a.files ?? []) {
-      if (!existsSync6(f))
+      if (!existsSync9(f))
         throw new ToolError(`Local file not found: ${f}`);
-      if (statSync(f).size > cap)
+      if (statSync2(f).size > cap)
         throw new ToolError(`${f} is larger than the share limit (${cap} bytes).`);
     }
     const results = await Promise.allSettled(targets.map(async (m) => {
@@ -20938,9 +21276,16 @@ function createHub(o) {
   const pool = new ConnectionPool(o.owner, o.transportFor);
   const store = new TeamStore(o.owner.projectDir);
   const poller = new TeamPoller({ store, pool, owner: o.owner, projectDir: o.owner.projectDir });
-  registerDelegateTools(server, { owner: o.owner, pool });
+  const budgetGuard = makeBudgetGuard(pool);
+  registerDelegateTools(server, { owner: o.owner, pool, budgetGuard });
   registerHostTools(server, { pool });
-  registerTeamTools(server, { owner: o.owner, pool, store, poller });
+  registerTeamTools(server, { owner: o.owner, pool, store, poller, budgetGuard });
+  registerBurnTools(server, { pool });
+  const burnTimer = setInterval(() => {
+    if (loadHosts().length)
+      refreshBurn(pool).catch(() => {});
+  }, 60000);
+  burnTimer.unref?.();
   if (store.active())
     poller.start();
   return {
@@ -20948,6 +21293,7 @@ function createHub(o) {
     pool,
     poller,
     close() {
+      clearInterval(burnTimer);
       poller.stop();
       pool.closeAll();
     }
@@ -20956,8 +21302,8 @@ function createHub(o) {
 
 // packages/hub/src/transport.ts
 import { spawn } from "node:child_process";
-import { copyFileSync, mkdirSync as mkdirSync5 } from "node:fs";
-import { basename as basename3, dirname, isAbsolute, join as join6, resolve } from "node:path";
+import { copyFileSync, mkdirSync as mkdirSync7 } from "node:fs";
+import { basename as basename3, dirname, isAbsolute, join as join9, resolve } from "node:path";
 var REMOTE_AGENTD = ".ladvin/bin/ladvin-agentd";
 function run(command, args, opts = {}) {
   return new Promise((r) => {
@@ -20991,8 +21337,8 @@ function sshBase() {
   if (process.env.LADVIN_SSH_CONFIG)
     args.unshift("-F", process.env.LADVIN_SSH_CONFIG);
   if (process.platform !== "win32") {
-    mkdirSync5(ladvinHome(), { recursive: true });
-    args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${join6(ladvinHome(), "cm-%C")}`, "-o", "ControlPersist=10m");
+    mkdirSync7(ladvinHome(), { recursive: true });
+    args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${join9(ladvinHome(), "cm-%C")}`, "-o", "ControlPersist=10m");
   }
   return args;
 }
@@ -21014,7 +21360,7 @@ function sshTransport(alias) {
         throw new Error(`upload to ${alias} failed: ${r.stderr.trim()}`);
     },
     download: async (remotePath, localPath) => {
-      mkdirSync5(dirname(resolve(localPath)), { recursive: true });
+      mkdirSync7(dirname(resolve(localPath)), { recursive: true });
       const { cwd, args } = scpArgs(alias, "download", resolve(localPath), remotePath);
       const r = await run("scp", [...sshBase(), "-q", ...args], { cwd });
       if (r.code !== 0)

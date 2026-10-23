@@ -14,7 +14,13 @@ const DEFAULT_MAX_SHARE_BYTES = 200 * 1024 * 1024;
 const MAX_WAIT_SECONDS = 300;
 const TERMINAL = new Set(["done", "failed", "cancelled"]);
 
-export type TeamCtx = { owner: Owner; pool: ConnectionPool; store: TeamStore; poller: TeamPoller };
+export type TeamCtx = {
+  owner: Owner;
+  pool: ConnectionPool;
+  store: TeamStore;
+  poller: TeamPoller;
+  budgetGuard?: (alias: string) => Promise<string | null>;
+};
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -66,6 +72,10 @@ export function registerTeamTools(server: McpServer, ctx: TeamCtx): void {
         if (!h) throw new ToolError(`Unknown host "${m.host}". Register it first with /ladvin:add-host ${m.host}.`);
         const preset = m.preset ?? "observer";
         if (PRESET_RANK[preset] > PRESET_RANK[h.maxPreset]) throw new ToolError(`Preset ${preset} exceeds host max ${h.maxPreset} for ${h.alias}.`);
+      }
+      for (const host of new Set(a.members.map((m) => m.host))) {
+        const refusal = await ctx.budgetGuard?.(host);
+        if (refusal) throw new ToolError(refusal);
       }
       // Reserve the team id first so members can be told which team they join.
       const team = store.create(a.goal, []);
