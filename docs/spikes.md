@@ -69,3 +69,12 @@ Real Claude Code ran with `--plugin-dir`, and the agentd binary was compiled loc
 - **worker task (`t_e07408bf`):** wrote `disk.txt`, attached it, and reported. `ladvin_fetch` saved identical bytes to `.ladvin/inbox/t_e07408bf/disk.txt` on Windows. The coordinator used the Haiku model.
 - **tmux:** sessions `ladvin-agentd` and `ladvin-<task>` exist on the host. The view closes 10 minutes after the task ends.
 - **Surprises:** none blocking. ladvin's appended system prompt held, even though the host user has their own Claude setup.
+
+## First real team run (kata54, 2026-10-23)
+
+Setup: the coordinator was real Claude Code (Sonnet, `-p`, `--plugin-dir`), with one `observer` teammate "sysmon" on kata54. Before the run, add-host upgraded the host's running agentd from 0.1.0 to 0.2.0 in place.
+
+- **Flow:** the teammate posted its plan, two `uptime` reports about 7.7 s apart, an answer to a question sent mid-run (disk usage), and final notes at `ladvin_team_end`. All of them arrived.
+- **Latency:** from the teammate's `team_send` to the local inbox took about 2 s (poll interval 1 s plus ssh). Question sent → answer in the inbox took about 5.6 s, including the model's turn.
+- **Clock:** the measured offset was -11 ms, so normalisation works.
+- **Finding (timezone):** the teammate wrote times on its own clock in the host's timezone (UTC, `06:41:49`). The inbox stamps are local time (UTC+7, `13:41:51`). Clock skew is handled, but the coordinator still has to adjust for the timezone by hand. Next step: tell teammates the coordinator's UTC offset, or ask them to timestamp in UTC, and render the inbox with the offset.
