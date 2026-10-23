@@ -18,6 +18,15 @@
         "zod": "^3.24.0",
       },
     },
+    "packages/hub": {
+      "name": "@ladvin/hub",
+      "version": "0.1.0",
+      "dependencies": {
+        "@ladvin/protocol": "workspace:*",
+        "@modelcontextprotocol/sdk": "^1.20.0",
+        "zod": "^3.24.0",
+      },
+    },
     "packages/protocol": {
       "name": "@ladvin/protocol",
       "version": "0.1.0",
@@ -30,6 +39,8 @@
     "@hono/node-server": ["@hono/node-server@2.1.5", "", { "peerDependencies": { "hono": "^4 || ^5.0.0-0" } }, "sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q=="],
 
     "@ladvin/agentd": ["@ladvin/agentd@workspace:packages/agentd"],
+
+    "@ladvin/hub": ["@ladvin/hub@workspace:packages/hub"],
 
     "@ladvin/protocol": ["@ladvin/protocol@workspace:packages/protocol"],
 
