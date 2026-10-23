@@ -32,11 +32,18 @@ import {
   type TaskInfo,
 } from "@ladvin/protocol";
 import type { z } from "zod";
+import type { BurnState } from "./burn";
 import { Outbox } from "./outbox";
 import { ladvinHome, socketPath, taskDir } from "./paths";
 import type { Runner } from "./runner";
 import type { TaskStore } from "./store";
 import { formatIncoming } from "./team-prompt";
+
+// Hash of the running binary, so add-host can tell whether this daemon runs the binary it just installed.
+let selfHash: string | undefined;
+function selfSha256(): string {
+  return (selfHash ??= createHash("sha256").update(readFileSync(process.execPath)).digest("hex"));
+}
 
 export const DEFAULT_MAX_SHARE_BYTES = 200 * 1024 * 1024;
 
@@ -82,6 +89,7 @@ export async function startServer(o: {
   store: TaskStore;
   runner: Runner;
   version: string;
+  burn?: BurnState;
   onShutdown?: () => void;
 }): Promise<{ close(): Promise<void>; lastHubContact: (teamId: string) => number }> {
   const { store, runner } = o;
@@ -119,9 +127,14 @@ export async function startServer(o: {
       const { protocolMajor } = parse(HelloParams, p);
       if (protocolMajor !== PROTOCOL_MAJOR)
         throw new RpcError(ERR_INVALID_PARAMS, `protocol mismatch: client ${protocolMajor}, agentd ${PROTOCOL_MAJOR}`);
-      return { protocolMajor: PROTOCOL_MAJOR, agentdVersion: o.version, now: new Date().toISOString() };
+      return { protocolMajor: PROTOCOL_MAJOR, agentdVersion: o.version, now: new Date().toISOString(), binarySha256: selfSha256() };
     });
     peer.handle("ping", async () => ({ now: new Date().toISOString() }));
+
+    peer.handle("burn.get", async () => {
+      if (!o.burn) throw new RpcError(ERR_BAD_STATE, "burn meter not available");
+      return o.burn.snapshot(store, Date.now());
+    });
 
     peer.handle("task.prepare", async (p) => {
       const { owner, cwd, preset } = parse(TaskPrepareParams, p);

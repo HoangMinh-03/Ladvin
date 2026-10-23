@@ -1,6 +1,7 @@
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 import { PROTOCOL_MAJOR } from "@ladvin/protocol";
 import { runAgentMcp } from "./agent-mcp";
+import { BurnState } from "./burn";
 import { loadConfig, runBridge, selfCommand } from "./bridge";
 import { Runner } from "./runner";
 import { startServer } from "./server";
@@ -14,6 +15,7 @@ async function serve(): Promise<void> {
   const cfg = loadConfig();
   const self = selfCommand();
   const store = new TaskStore();
+  const burn = new BurnState({ userHome: homedir() });
   const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   const runner = new Runner({
     store,
@@ -21,6 +23,7 @@ async function serve(): Promise<void> {
     claudeBin: cfg.claudeBin ?? "claude",
     claudeBinArgs: cfg.claudeArgs,
     env: cfg.path ? { PATH: cfg.path } : undefined,
+    onRateLimit: (ev) => burn.recordRateLimit(ev, new Date()),
     agentMcpCommand: (id) => ({ command: self.command, args: [...self.args, "agent-mcp", id] }),
     viewCommand: (id) => [self.command, ...self.args, "view", id].map(quote).join(" "),
     tmux: new Tmux(cfg.tmuxBin),
@@ -28,7 +31,7 @@ async function serve(): Promise<void> {
   // Runs that were live when a previous agentd died can no longer be driven.
   for (const t of store.list())
     if (t.state === "running" || t.state === "idle") store.update(t.taskId, { state: "failed", failReason: "agentd restarted" });
-  const srv = await startServer({ store, runner, version: VERSION, onShutdown: () => process.exit(0) });
+  const srv = await startServer({ store, runner, version: VERSION, burn, onShutdown: () => process.exit(0) });
   const idleMs = Number(process.env.LADVIN_TEAM_IDLE_MS) || 15 * 60_000;
   setInterval(() => runner.sweepIdle(Date.now(), srv.lastHubContact, idleMs), 30_000).unref();
   const stop = () => void srv.close().then(() => process.exit(0));

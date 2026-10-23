@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_WALL_MS, type Report, type ReportStatus, type Usage, ZERO_USAGE } from "@ladvin/protocol";
-import { buildArgs, DELEGATE_SYSTEM_PROMPT, parseEvent, userMessage } from "./claude";
+import { buildArgs, DELEGATE_SYSTEM_PROMPT, parseEvent, userMessage, type Window } from "./claude";
 import { taskDir } from "./paths";
 import { TEAM_SYSTEM_PROMPT } from "./team-prompt";
 import type { TaskStore } from "./store";
@@ -15,6 +15,7 @@ export type RunnerOptions = {
   claudeBinArgs?: string[];
   agentMcpCommand: (taskId: string) => { command: string; args: string[] };
   viewCommand?: (taskId: string) => string;
+  onRateLimit?: (ev: { fiveHour?: Window; sevenDay?: Window }) => void;
   env?: Record<string, string>; // merged into claude's env (add-host stores the login-shell PATH here)
   tmux?: Tmux;
   now?: () => Date;
@@ -185,6 +186,7 @@ export class Runner {
     const ev = parseEvent(line);
     if (!ev) return;
     if (ev.kind === "init") this.o.store.update(taskId, { sessionId: ev.sessionId });
+    else if (ev.kind === "rateLimit") this.o.onRateLimit?.(ev);
     else if (ev.kind === "assistant") {
       if (ev.text) live.lastText = ev.text;
       const activity = ev.toolUses.at(-1) ?? ev.text.split("\n")[0];

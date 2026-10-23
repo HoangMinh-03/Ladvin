@@ -109,7 +109,7 @@ export type TaskInfo = z.infer<typeof TaskInfo>;
 // ---- method params / results ----
 
 export const HelloParams = z.object({ protocolMajor: z.number(), client: Owner });
-export type HelloResult = { protocolMajor: number; agentdVersion: string; now: string };
+export type HelloResult = { protocolMajor: number; agentdVersion: string; now: string; binarySha256?: string };
 export type PingResult = { now: string };
 
 export const TaskPrepareParams = z.object({ owner: Owner, cwd: z.string().optional(), preset: Preset });
@@ -172,3 +172,13 @@ export const METHODS = {
   agentTasksOp: "agent.tasksOp",
   agentTasksList: "agent.tasksList",
 } as const;
+
+// ---- burn meter (spec §10) ----
+export type RateWindow = { utilization: number; resetsAt: number };
+export type AccountInfo = { accountUuid: string; email?: string; name?: string };
+export type BurnGetResult = {
+  account: AccountInfo | null;
+  rateLimit: { fiveHour?: RateWindow; sevenDay?: RateWindow; observedAt: string } | null;
+  usage: { last5h: Usage; last7d: Usage; billablePerMin15: number };
+  agents: { taskId: string; state: TaskState; kind: TaskKind; usage: Usage }[];
+};
