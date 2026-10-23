@@ -19,6 +19,7 @@ async function serve(): Promise<void> {
     store,
     hostName: hostname(),
     claudeBin: cfg.claudeBin ?? "claude",
+    claudeBinArgs: cfg.claudeArgs,
     agentMcpCommand: (id) => ({ command: self.command, args: [...self.args, "agent-mcp", id] }),
     viewCommand: (id) => [self.command, ...self.args, "view", id].map(quote).join(" "),
     tmux: new Tmux(cfg.tmuxBin),

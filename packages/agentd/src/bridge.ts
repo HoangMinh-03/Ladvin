@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { configPath, ladvinHome, logPath, socketPath } from "./paths";
 
-export type AgentdConfig = { claudeBin?: string; tmuxBin?: string };
+export type AgentdConfig = { claudeBin?: string; claudeArgs?: string[]; tmuxBin?: string };
 
 export function loadConfig(): AgentdConfig {
   const p = configPath();
