@@ -36,7 +36,7 @@ export function userMessage(text: string): string {
 export type Window = { utilization: number; resetsAt: number };
 export type ClaudeEvent =
   | { kind: "init"; sessionId: string }
-  | { kind: "assistant"; text: string; toolUses: string[] }
+  | { kind: "assistant"; text: string; toolUses: string[]; id?: string; usage?: Usage }
   | { kind: "result"; isError: boolean; text: string; usage: Usage; permissionDenials: string[] }
   | { kind: "rateLimit"; fiveHour?: Window; sevenDay?: Window }
   | { kind: "other" };
@@ -66,11 +66,14 @@ export function parseEvent(line: string): ClaudeEvent | null {
   if (o.type === "system" && o.subtype === "init") return { kind: "init", sessionId: o.session_id };
   if (o.type === "assistant") {
     const content: any[] = o.message?.content ?? [];
-    return {
+    const ev: ClaudeEvent = {
       kind: "assistant",
       text: content.filter((c) => c.type === "text").map((c) => c.text).join("\n"),
       toolUses: content.filter((c) => c.type === "tool_use").map((c) => toolLabel(c.name, c.input)),
     };
+    if (o.message?.id) ev.id = o.message.id;
+    if (o.message?.usage) ev.usage = mapUsage(o.message.usage);
+    return ev;
   }
   if (o.type === "result") {
     return {

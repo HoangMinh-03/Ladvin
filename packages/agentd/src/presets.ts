@@ -7,8 +7,11 @@ import { ladvinHome } from "./paths";
 export const OBSERVER_ALLOWLIST: string[] = [
   "top -b", "ps", "iostat", "vmstat", "free", "df", "du", "ss", "netstat", "uptime",
   "cat", "tail", "head", "grep", "ls", "journalctl",
-  "docker stats", "docker logs", "docker ps", "psql -c", "mysql -e",
+  "docker stats", "docker logs", "docker ps",
 ];
+
+// ladvin_report / ladvin_attach_artifact: a headless agent cannot be asked for permission, so allow them explicitly.
+const LADVIN_TOOLS = "mcp__ladvin";
 
 function observerAllowlist(): string[] {
   const file = join(ladvinHome(), "observer-allowlist.txt");
@@ -21,10 +24,10 @@ export function presetArgs(p: Preset): string[] {
     case "observer":
       return [
         "--permission-mode", "default",
-        "--allowedTools", ["Read", "Grep", "Glob", ...observerAllowlist().map((c) => `Bash(${c}:*)`)].join(","),
+        "--allowedTools", [LADVIN_TOOLS, "Read", "Grep", "Glob", ...observerAllowlist().map((c) => `Bash(${c}:*)`)].join(","),
       ];
     case "worker":
-      return ["--permission-mode", "acceptEdits", "--allowedTools", "Bash,Read,Grep,Glob,Edit,Write"];
+      return ["--permission-mode", "acceptEdits", "--allowedTools", `${LADVIN_TOOLS},Bash,Read,Grep,Glob,Edit,Write`];
     case "yolo":
       return ["--permission-mode", "bypassPermissions"];
   }

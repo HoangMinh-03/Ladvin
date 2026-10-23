@@ -65,3 +65,23 @@ test("parseEvent maps init, assistant, result, rateLimit", () => {
   expect(parseEvent('{"type":"system","subtype":"hook_started"}')).toEqual({ kind: "other" });
   expect(parseEvent("not json")).toBeNull();
 });
+
+test("observer and worker may call ladvin's own MCP tools (report/attach)", () => {
+  for (const preset of ["observer", "worker"] as const) {
+    const a = buildArgs({ ...base, preset });
+    const allowed = a[a.indexOf("--allowedTools") + 1]!.split(",");
+    expect(allowed).toContain("mcp__ladvin");
+  }
+});
+
+test("observer allowlist has no SQL clients that can write", () => {
+  const s = buildArgs({ ...base, preset: "observer" }).join(" ");
+  expect(s).not.toContain("psql");
+  expect(s).not.toContain("mysql");
+});
+
+test("parseEvent keeps assistant message id and usage when present", () => {
+  expect(
+    parseEvent('{"type":"assistant","message":{"id":"m1","content":[],"usage":{"input_tokens":4,"output_tokens":6}}}'),
+  ).toEqual({ kind: "assistant", text: "", toolUses: [], id: "m1", usage: { input: 4, output: 6, cacheRead: 0, cacheWrite: 0 } });
+});

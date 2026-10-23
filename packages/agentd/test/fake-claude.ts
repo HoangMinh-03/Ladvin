@@ -47,6 +47,12 @@ rl.on("close", () => {
 const nextLine = () =>
   new Promise<string | null>((r) => (lines.length ? r(lines.shift()!) : stdinClosed ? r(null) : (waiter = r)));
 
+function mcpAllowed(): boolean {
+  const flag = (k: string) => (argv.includes(k) ? argv[argv.indexOf(k) + 1] : undefined);
+  if (flag("--permission-mode") === "bypassPermissions") return true;
+  return (flag("--allowedTools") ?? "").split(",").some((t) => t === "mcp__ladvin" || t.startsWith("mcp__ladvin__"));
+}
+
 let client: Client | null = null;
 async function mcp(): Promise<Client> {
   if (client) return client;
@@ -67,12 +73,16 @@ async function run(steps: any[]): Promise<void> {
     else if (s.waitInput) await nextLine();
     else if (s.writeFile) writeFileSync(s.writeFile.path, s.writeFile.content);
     else if (s.ifExists !== undefined) await run(existsSync(s.ifExists) ? s.then : (s.else ?? []));
-    else if (s.callTool) await (await mcp()).callTool({ name: s.callTool.name, arguments: s.callTool.args });
+    else if (s.callTool) {
+      // Mirror claude: in -p mode an MCP tool not in --allowedTools is denied (unless bypassPermissions).
+      if (!mcpAllowed()) out({ type: "user", message: { role: "user", content: [{ type: "tool_result", is_error: true, content: `permission denied: mcp__ladvin__${s.callTool.name}` }] } });
+      else await (await mcp()).callTool({ name: s.callTool.name, arguments: s.callTool.args });
+    }
     else if (s.exit !== undefined) process.exit(s.exit);
   }
 }
 
-out({ type: "system", subtype: "init", cwd: process.cwd(), argv });
+out({ type: "system", subtype: "init", cwd: process.cwd(), argv, envMark: process.env.LADVIN_TEST_MARK });
 await run(script);
 await client?.close();
 while ((await nextLine()) !== null) {}
