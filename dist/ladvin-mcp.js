@@ -19797,7 +19797,7 @@ class RpcPeer {
 var PROTOCOL_MAJOR = 1;
 var Preset = enumType(["observer", "worker", "yolo"]);
 var PRESET_RANK = { observer: 0, worker: 1, yolo: 2 };
-var TaskState = enumType(["queued", "running", "done", "failed", "cancelled"]);
+var TaskState = enumType(["queued", "running", "idle", "done", "failed", "cancelled"]);
 var Owner = objectType({ machineId: stringType().min(1), projectDir: stringType().min(1) });
 var Usage = objectType({ input: numberType(), output: numberType(), cacheRead: numberType(), cacheWrite: numberType() });
 var Artifact = objectType({ path: stringType(), size: numberType(), note: stringType().optional() });
@@ -19817,6 +19817,40 @@ var Report = objectType({
   reportMissing: booleanType(),
   permissionDenials: arrayType(stringType()).optional()
 });
+var TaskKind = enumType(["delegate", "team"]);
+var TeamInfo = objectType({ teamId: stringType(), role: stringType().min(1) });
+var TeamTaskStatus = enumType(["todo", "doing", "done"]);
+var TeamTask = objectType({
+  id: stringType(),
+  title: stringType(),
+  status: TeamTaskStatus,
+  owner: stringType().optional(),
+  note: stringType().optional()
+});
+var TeamTaskOp = discriminatedUnionType("op", [
+  objectType({ op: literalType("add"), title: stringType().min(1), owner: stringType().optional() }),
+  objectType({
+    op: literalType("update"),
+    id: stringType(),
+    status: TeamTaskStatus.optional(),
+    owner: stringType().optional(),
+    note: stringType().optional()
+  })
+]);
+var OutBase = { id: stringType(), teamId: stringType(), taskId: stringType(), role: stringType(), sentAt: stringType() };
+var OutMsg = discriminatedUnionType("kind", [
+  objectType({ ...OutBase, kind: literalType("message"), text: stringType() }),
+  objectType({
+    ...OutBase,
+    kind: literalType("file"),
+    name: stringType(),
+    path: stringType(),
+    size: numberType(),
+    sha256: stringType(),
+    note: stringType().optional()
+  }),
+  objectType({ ...OutBase, kind: literalType("tasksOp"), op: TeamTaskOp })
+]);
 var TaskInfo = objectType({
   taskId: stringType(),
   owner: Owner,
@@ -19831,7 +19865,9 @@ var TaskInfo = objectType({
   lastActivity: stringType().optional(),
   failReason: stringType().optional(),
   sessionId: stringType().optional(),
-  runs: numberType()
+  runs: numberType(),
+  kind: TaskKind.optional(),
+  team: TeamInfo.optional()
 });
 var HelloParams = objectType({ protocolMajor: numberType(), client: Owner });
 var TaskPrepareParams = objectType({ owner: Owner, cwd: stringType().optional(), preset: Preset });
@@ -19839,6 +19875,23 @@ var TaskStartParams = objectType({ taskId: stringType(), prompt: stringType().mi
 var TaskListParams = objectType({ owner: Owner.optional() });
 var TaskIdParams = objectType({ taskId: stringType() });
 var TaskFollowupParams = objectType({ taskId: stringType(), text: stringType().min(1) });
+var TeamJoinParams = objectType({
+  owner: Owner,
+  teamId: stringType().min(1),
+  role: stringType().min(1),
+  goal: stringType().min(1),
+  cwd: stringType().optional(),
+  preset: Preset
+});
+var TeamSendParams = objectType({ taskId: stringType(), text: stringType().min(1), from: stringType().min(1) });
+var TeamPullParams = objectType({ owner: Owner });
+var TeamAckParams = objectType({ ids: arrayType(stringType()) });
+var TeamSyncTasksParams = objectType({ teamId: stringType(), tasks: arrayType(TeamTask) });
+var TeamStopParams = objectType({ taskId: stringType() });
+var AgentTeamSendParams = objectType({ taskId: stringType(), text: stringType().min(1) });
+var AgentShareParams = objectType({ taskId: stringType(), path: stringType(), note: stringType().optional() });
+var AgentTasksOpParams = objectType({ taskId: stringType(), op: TeamTaskOp });
+var AgentTasksListParams = objectType({ taskId: stringType() });
 var AgentReportParams = objectType({
   taskId: stringType(),
   summary: stringType(),
@@ -19931,9 +19984,9 @@ class ConnectionPool {
   }
 }
 
-// packages/hub/src/tools/delegate.ts
-import { existsSync as existsSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { basename, join as join2, posix } from "node:path";
+// packages/hub/src/team/poller.ts
+import { appendFileSync as appendFileSync3, mkdirSync as mkdirSync3 } from "node:fs";
+import { basename, join as join3, posix } from "node:path";
 
 // packages/hub/src/state.ts
 import { createHash, randomUUID } from "node:crypto";
@@ -19985,6 +20038,114 @@ function ensureGitignore(projectDir) {
 `);
 }
 
+// packages/hub/src/team/store.ts
+import { randomBytes } from "node:crypto";
+import { appendFileSync as appendFileSync2, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join2 } from "node:path";
+function writeJson(file, value) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync2(tmp, JSON.stringify(value, null, 2));
+  renameSync(tmp, file);
+}
+
+class TeamStore {
+  root;
+  constructor(projectDir) {
+    this.root = projectStateDir(projectDir);
+  }
+  dir(teamId) {
+    return join2(this.root, "teams", teamId);
+  }
+  activeFile = () => join2(this.root, "active-team");
+  get(teamId) {
+    const f = join2(this.dir(teamId), "team.json");
+    return existsSync2(f) ? JSON.parse(readFileSync2(f, "utf8")) : undefined;
+  }
+  active() {
+    if (!existsSync2(this.activeFile()))
+      return;
+    const t = this.get(readFileSync2(this.activeFile(), "utf8").trim());
+    return t?.status === "active" ? t : undefined;
+  }
+  latest() {
+    if (!existsSync2(this.activeFile()))
+      return;
+    return this.get(readFileSync2(this.activeFile(), "utf8").trim());
+  }
+  create(goal, members) {
+    const cur = this.active();
+    if (cur)
+      throw new Error(`a team is already active in this project (${cur.teamId})`);
+    const team = {
+      teamId: `team_${randomBytes(4).toString("hex")}`,
+      goal,
+      members,
+      tasks: [],
+      status: "active",
+      createdAt: new Date().toISOString()
+    };
+    mkdirSync2(this.dir(team.teamId), { recursive: true });
+    this.save(team);
+    writeFileSync2(this.activeFile(), team.teamId);
+    return team;
+  }
+  save(team) {
+    mkdirSync2(this.dir(team.teamId), { recursive: true });
+    writeJson(join2(this.dir(team.teamId), "team.json"), team);
+  }
+  end(teamId) {
+    const t = this.get(teamId);
+    if (t)
+      this.save({ ...t, status: "ended", endedAt: new Date().toISOString() });
+  }
+  all(teamId) {
+    const f = join2(this.dir(teamId), "inbox.jsonl");
+    if (!existsSync2(f))
+      return [];
+    return readFileSync2(f, "utf8").split(`
+`).filter(Boolean).map((l) => JSON.parse(l));
+  }
+  has(teamId, id) {
+    return this.all(teamId).some((e) => e.id === id);
+  }
+  appendInbox(teamId, e) {
+    if (this.has(teamId, e.id))
+      return false;
+    mkdirSync2(this.dir(teamId), { recursive: true });
+    appendFileSync2(join2(this.dir(teamId), "inbox.jsonl"), JSON.stringify(e) + `
+`);
+    return true;
+  }
+  cursor(teamId) {
+    const f = join2(this.dir(teamId), "read-cursor");
+    return existsSync2(f) ? Number(readFileSync2(f, "utf8")) || 0 : 0;
+  }
+  unread(teamId) {
+    return this.all(teamId).slice(this.cursor(teamId));
+  }
+  markRead(teamId, count) {
+    const n = count === undefined ? this.all(teamId).length : this.cursor(teamId) + count;
+    writeFileSync2(join2(this.dir(teamId), "read-cursor"), String(n));
+  }
+}
+function applyOp(tasks, op, _by) {
+  if (op.op === "add") {
+    const n = tasks.reduce((m, t) => Math.max(m, Number(t.id.replace(/^k/, "")) || 0), 0) + 1;
+    return [...tasks, { id: `k${n}`, title: op.title, status: "todo", ...op.owner ? { owner: op.owner } : {} }];
+  }
+  return tasks.map((t) => t.id !== op.id ? t : { ...t, ...op.status ? { status: op.status } : {}, ...op.owner ? { owner: op.owner } : {}, ...op.note ? { note: op.note } : {} });
+}
+function describeOp(op, tasks) {
+  if (op.op === "add")
+    return `added ${tasks.at(-1)?.id ?? "?"} ${op.title}`;
+  const parts = [op.status && `status ${op.status}`, op.owner && `owner ${op.owner}`, op.note && `note "${op.note}"`].filter(Boolean);
+  return `updated ${op.id}: ${parts.join(", ")}`;
+}
+function renderTasks(tasks) {
+  return tasks.length ? tasks.map((t) => `${t.id} [${t.status}] ${t.title}${t.owner ? ` (${t.owner})` : ""}${t.note ? ` — ${t.note}` : ""}`).join(`
+`) : "The task list is empty.";
+}
+
 // packages/hub/src/untrusted.ts
 function wrapRemote(host, agent, body) {
   const safe = body.replace(/<\/?ladvin-remote-content/gi, (m) => m.replace("<", "&lt;"));
@@ -19994,7 +20155,105 @@ ${safe}
 </ladvin-remote-content>`;
 }
 
+// packages/hub/src/team/time.ts
+function toLocal(remoteIso, offsetMs) {
+  return new Date(Date.parse(remoteIso) - offsetMs);
+}
+var pad = (n, w = 2) => String(n).padStart(w, "0");
+function fmt(d) {
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+function renderInbox(entries) {
+  return entries.map((e) => wrapRemote(e.host, e.taskId, `[${fmt(new Date(e.at))}] ${e.role}@${e.host}: ${e.text}`)).join(`
+`);
+}
+
+// packages/hub/src/team/poller.ts
+class TeamPoller {
+  o;
+  timer = null;
+  busy = false;
+  constructor(o) {
+    this.o = o;
+  }
+  start() {
+    if (this.timer)
+      return;
+    this.timer = setInterval(() => void this.pollOnce().catch(() => {}), this.o.intervalMs ?? 1000);
+  }
+  stop() {
+    if (this.timer)
+      clearInterval(this.timer);
+    this.timer = null;
+  }
+  running() {
+    return !!this.timer;
+  }
+  async pollOnce() {
+    if (this.busy)
+      return 0;
+    this.busy = true;
+    try {
+      const team = this.o.store.latest();
+      if (!team)
+        return 0;
+      let added = 0;
+      for (const host of [...new Set(team.members.map((m) => m.host))]) {
+        try {
+          added += await this.pollHost(team.teamId, host);
+        } catch {}
+      }
+      return added;
+    } finally {
+      this.busy = false;
+    }
+  }
+  async pollHost(teamId, host) {
+    const conn = this.o.pool.get(host);
+    const { messages } = await conn.call("team.pull", { owner: this.o.owner });
+    const offset = conn.info?.clockOffsetMs ?? 0;
+    const done = [];
+    let added = 0;
+    for (const m of messages.filter((x) => x.teamId === teamId)) {
+      if (!this.o.store.has(teamId, m.id)) {
+        const text = await this.handle(teamId, host, m);
+        if (this.o.store.appendInbox(teamId, { id: m.id, at: toLocal(m.sentAt, offset).toISOString(), role: m.role, host, taskId: m.taskId, text }))
+          added++;
+      }
+      done.push(m.id);
+    }
+    if (done.length)
+      await conn.call("team.ack", { ids: done });
+    return added;
+  }
+  async handle(teamId, host, m) {
+    if (m.kind === "message")
+      return m.text;
+    const team = this.o.store.get(teamId);
+    if (m.kind === "file") {
+      const member = team.members.find((x) => x.taskId === m.taskId);
+      const dir = join3(this.o.projectDir, ".ladvin", "shared", teamId);
+      mkdirSync3(dir, { recursive: true });
+      const local = join3(dir, basename(m.name));
+      await this.o.pool.transport(host).download(posix.join((member?.cwd ?? "").replace(/\\/g, "/"), m.path), local);
+      appendFileSync3(join3(dir, "manifest.jsonl"), JSON.stringify({ name: m.name, from: `${m.role}@${host}`, size: m.size, sha256: m.sha256, note: m.note, time: new Date().toISOString() }) + `
+`);
+      ensureGitignore(this.o.projectDir);
+      return `shared file ${m.name} (${m.size} bytes) → ${local}${m.note ? ` — ${m.note}` : ""}`;
+    }
+    const tasks = applyOp(team.tasks, m.op, m.role);
+    this.o.store.save({ ...team, tasks });
+    await syncTasks(this.o.pool, team, tasks);
+    return `task list: ${describeOp(m.op, tasks)}`;
+  }
+}
+async function syncTasks(pool, team, tasks) {
+  await Promise.allSettled([...new Set(team.members.map((m) => m.host))].map((h) => pool.get(h).call("team.syncTasks", { teamId: team.teamId, tasks })));
+}
+
 // packages/hub/src/tools/delegate.ts
+import { existsSync as existsSync3, readFileSync as readFileSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { basename as basename2, join as join4, posix as posix2 } from "node:path";
 var ok = (text) => ({ content: [{ type: "text", text }] });
 var fail = (text) => ({ ...ok(text), isError: true });
 
@@ -20010,14 +20269,14 @@ function guarded(fn) {
   };
 }
 function indexFile(projectDir) {
-  return join2(projectStateDir(projectDir), "tasks.json");
+  return join4(projectStateDir(projectDir), "tasks.json");
 }
 function loadIndex(projectDir) {
   const f = indexFile(projectDir);
-  return existsSync2(f) ? JSON.parse(readFileSync2(f, "utf8")) : [];
+  return existsSync3(f) ? JSON.parse(readFileSync3(f, "utf8")) : [];
 }
 function addToIndex(projectDir, e) {
-  writeFileSync2(indexFile(projectDir), JSON.stringify([...loadIndex(projectDir), e], null, 2));
+  writeFileSync3(indexFile(projectDir), JSON.stringify([...loadIndex(projectDir), e], null, 2));
 }
 function elapsed(t) {
   if (!t.startedAt)
@@ -20092,15 +20351,15 @@ function registerDelegateTools(server, ctx) {
     if (PRESET_RANK[preset] > PRESET_RANK[h.maxPreset])
       throw new ToolError(`Preset ${preset} exceeds host max ${h.maxPreset} for ${h.alias}.`);
     for (const f of a.files ?? [])
-      if (!existsSync2(f))
+      if (!existsSync3(f))
         throw new ToolError(`Local file not found: ${f}`);
     const conn = pool.get(a.host);
     const { taskId, cwd } = await conn.call("task.prepare", { owner, cwd: a.cwd, preset });
     addToIndex(owner.projectDir, { taskId, host: a.host });
     const inputs = [];
     for (const f of a.files ?? []) {
-      const rel = posix.join(".ladvin", "inbox", basename(f));
-      await pool.transport(a.host).upload(f, posix.join(cwd.replace(/\\/g, "/"), rel));
+      const rel = posix2.join(".ladvin", "inbox", basename2(f));
+      await pool.transport(a.host).upload(f, posix2.join(cwd.replace(/\\/g, "/"), rel));
       inputs.push(rel);
     }
     const prompt = inputs.length ? `${a.task}
@@ -20152,8 +20411,8 @@ ${inputs.map((p) => `- ${p}`).join(`
     const report = await pool.get(host).call("task.report", { taskId: a.task_id });
     if (!report.artifacts.some((x) => x.path === a.artifact))
       throw new ToolError(`No artifact "${a.artifact}" on ${a.task_id}. Available: ${report.artifacts.map((x) => x.path).join(", ") || "none"}`);
-    const remotePath = posix.isAbsolute(a.artifact) || /^[A-Za-z]:/.test(a.artifact) ? a.artifact : posix.join(task.cwd.replace(/\\/g, "/"), a.artifact);
-    const local = join2(owner.projectDir, ".ladvin", "inbox", a.task_id, basename(a.artifact));
+    const remotePath = posix2.isAbsolute(a.artifact) || /^[A-Za-z]:/.test(a.artifact) ? a.artifact : posix2.join(task.cwd.replace(/\\/g, "/"), a.artifact);
+    const local = join4(owner.projectDir, ".ladvin", "inbox", a.task_id, basename2(a.artifact));
     await pool.transport(host).download(remotePath, local);
     ensureGitignore(owner.projectDir);
     return ok(`Saved ${a.artifact} to ${local}`);
@@ -20187,8 +20446,8 @@ ${lines.join(`
 
 // packages/hub/src/setup/add-host.ts
 import { createHash as createHash2 } from "node:crypto";
-import { existsSync as existsSync3, mkdirSync as mkdirSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join3 } from "node:path";
+import { existsSync as existsSync4, mkdirSync as mkdirSync4, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join5 } from "node:path";
 var AGENTD_VERSION = "0.1.0";
 var RELEASE_REPO = "OWNER/ladvin";
 var shq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -20198,7 +20457,7 @@ function parseUname(out) {
   const arch = machine === "x86_64" || machine === "amd64" ? "x64" : machine === "aarch64" || machine === "arm64" ? "arm64" : null;
   return os && arch ? { os, arch } : null;
 }
-var posix2 = (script) => `sh -c ${shq(script)}`;
+var posix3 = (script) => `sh -c ${shq(script)}`;
 var PROBE = [
   `L=$("\${SHELL:-/bin/sh}" -lc 'echo "path=$PATH"; echo "claude=$(command -v claude)"; echo "tmux=$(command -v tmux)"' 2>/dev/null </dev/null)`,
   `printf '%s\\n' "$L" | grep -E '^(path|claude|tmux)='`,
@@ -20221,14 +20480,14 @@ async function downloadBinary(os, arch, version, o = {}) {
   const name = `ladvin-agentd-${os}-${arch}`;
   const devDir = process.env.LADVIN_AGENTD_BINARY_DIR;
   if (devDir) {
-    const p = join3(devDir, name);
-    if (!existsSync3(p))
+    const p = join5(devDir, name);
+    if (!existsSync4(p))
       throw new Error(`${p} not found (LADVIN_AGENTD_BINARY_DIR)`);
     return p;
   }
-  const dir = join3(ladvinHome(), "cache", version);
-  const dest = join3(dir, name);
-  if (existsSync3(dest))
+  const dir = join5(ladvinHome(), "cache", version);
+  const dest = join5(dir, name);
+  if (existsSync4(dest))
     return dest;
   const f = o.fetchImpl ?? fetch;
   const base = `https://github.com/${RELEASE_REPO}/releases/download/v${version}`;
@@ -20246,8 +20505,8 @@ async function downloadBinary(os, arch, version, o = {}) {
   const bin = await get(`${base}/${name}`);
   if (createHash2("sha256").update(bin).digest("hex") !== expected)
     throw new Error(`checksum mismatch for ${name}`);
-  mkdirSync2(dir, { recursive: true });
-  writeFileSync3(dest, bin, { mode: 493 });
+  mkdirSync4(dir, { recursive: true });
+  writeFileSync4(dest, bin, { mode: 493 });
   return dest;
 }
 async function addHost(alias, o) {
@@ -20260,7 +20519,7 @@ async function addHost(alias, o) {
   if (!plat)
     return { lines: [`unsupported OS/arch: ${un.stdout.trim()} (ladvin supports Linux and macOS, x64/arm64)`] };
   lines.push(`✓ ${alias}: ${plat.os}/${plat.arch}`);
-  const tools = parseProbe((await t.exec(posix2(PROBE))).stdout, o.claudePath);
+  const tools = parseProbe((await t.exec(posix3(PROBE))).stdout, o.claudePath);
   if (!tools.claude)
     lines.push(`claude not found on ${alias}. Install it there and run "claude" once to log in, or pass its full path as claude_path.`);
   if (!tools.tmux)
@@ -20268,7 +20527,7 @@ async function addHost(alias, o) {
   if (!tools.claude || !tools.tmux)
     return { lines };
   lines.push(`✓ claude: ${tools.claude}`, `✓ tmux: ${tools.tmux}`);
-  const withPath = (cmd) => posix2(`PATH=${shq(tools.path)}; export PATH; ${cmd}`);
+  const withPath = (cmd) => posix3(`PATH=${shq(tools.path)}; export PATH; ${cmd}`);
   if (!o.skipLoginCheck) {
     const probe = await t.exec(withPath(`exec ${shq(tools.claude)} -p --model haiku 'reply ok' </dev/null`), 120000);
     if (probe.code !== 0)
@@ -20278,12 +20537,12 @@ async function addHost(alias, o) {
     lines.push("✓ claude is logged in");
   }
   const local = await (o.fetchBinary ?? downloadBinary)(plat.os, plat.arch, AGENTD_VERSION);
-  const mk = await t.exec(posix2("mkdir -p ~/.ladvin/bin && chmod 700 ~/.ladvin"));
+  const mk = await t.exec(posix3("mkdir -p ~/.ladvin/bin && chmod 700 ~/.ladvin"));
   if (mk.code !== 0)
     return { lines: [...lines, `cannot create ~/.ladvin on ${alias}: ${mk.stderr.trim()}`] };
   await t.upload(local, "~/.ladvin/bin/ladvin-agentd.new");
   const cfg = JSON.stringify({ claudeBin: tools.claude, tmuxBin: tools.tmux, path: tools.path });
-  const inst = await t.exec(posix2(`chmod +x ~/.ladvin/bin/ladvin-agentd.new && mv -f ~/.ladvin/bin/ladvin-agentd.new ~/.ladvin/bin/ladvin-agentd && printf '%s' ${shq(cfg)} > ~/.ladvin/agentd.json`));
+  const inst = await t.exec(posix3(`chmod +x ~/.ladvin/bin/ladvin-agentd.new && mv -f ~/.ladvin/bin/ladvin-agentd.new ~/.ladvin/bin/ladvin-agentd && printf '%s' ${shq(cfg)} > ~/.ladvin/agentd.json`));
   if (inst.code !== 0)
     return { lines: [...lines, `installing agentd on ${alias} failed: ${inst.stderr.trim()}`] };
   lines.push(`✓ installed ladvin-agentd ${AGENTD_VERSION}`);
@@ -20368,20 +20627,267 @@ function registerHostTools(server, ctx) {
   }));
 }
 
+// packages/hub/src/tools/team.ts
+import { existsSync as existsSync5, statSync } from "node:fs";
+import { basename as basename3, posix as posix4 } from "node:path";
+var DEFAULT_MAX_SHARE_BYTES = 200 * 1024 * 1024;
+var MAX_WAIT_SECONDS = 300;
+var TERMINAL = new Set(["done", "failed", "cancelled"]);
+var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function registerTeamTools(server, ctx) {
+  const { owner, pool, store, poller } = ctx;
+  const active = () => {
+    const t = store.active();
+    if (!t)
+      throw new ToolError("No active team in this project. Start one with ladvin_team_start.");
+    return t;
+  };
+  const recipients = (team, to) => {
+    if (to === "all")
+      return team.members;
+    const hit = team.members.filter((m) => m.role === to || m.taskId === to);
+    if (!hit.length)
+      throw new ToolError(`No teammate "${to}". Members: ${team.members.map((m) => m.role).join(", ")} (or "all").`);
+    return hit;
+  };
+  const memberState = (m) => pool.get(m.host).call("task.get", { taskId: m.taskId });
+  server.registerTool("ladvin_team_start", {
+    description: "Start a team: remote Claude Code teammates on SSH hosts that work on one goal with you, exchanging messages and files while running. One active team per project.",
+    inputSchema: {
+      goal: stringType().describe("The shared goal, with enough context for a teammate to start"),
+      members: arrayType(objectType({
+        host: stringType(),
+        role: stringType().describe("Short unique role name, e.g. db-watcher"),
+        cwd: stringType().optional(),
+        preset: Preset.optional().describe("default observer")
+      })).min(1)
+    }
+  }, guarded(async (a) => {
+    const cur = store.active();
+    if (cur)
+      throw new ToolError(`A team is already active in this project (${cur.teamId}). End it with ladvin_team_end first.`);
+    const roles = a.members.map((m) => m.role);
+    if (new Set(roles).size !== roles.length)
+      throw new ToolError("Member roles must be unique.");
+    const hosts = loadHosts();
+    for (const m of a.members) {
+      const h = hosts.find((x) => x.alias === m.host);
+      if (!h)
+        throw new ToolError(`Unknown host "${m.host}". Register it first with /ladvin:add-host ${m.host}.`);
+      const preset = m.preset ?? "observer";
+      if (PRESET_RANK[preset] > PRESET_RANK[h.maxPreset])
+        throw new ToolError(`Preset ${preset} exceeds host max ${h.maxPreset} for ${h.alias}.`);
+    }
+    const team = store.create(a.goal, []);
+    const members = [];
+    try {
+      for (const m of a.members) {
+        const preset = m.preset ?? "observer";
+        const conn = pool.get(m.host);
+        const { taskId, cwd } = await conn.call("team.join", {
+          owner,
+          teamId: team.teamId,
+          role: m.role,
+          goal: a.goal,
+          cwd: m.cwd,
+          preset
+        });
+        members.push({ taskId, host: m.host, role: m.role, preset, cwd });
+        store.save({ ...team, members });
+        const prompt = `Team goal: ${a.goal}
+Your role: ${m.role}
+Teammates: ${a.members.map((x) => `${x.role}@${x.host}`).join(", ")} and the coordinator (local).
+Start by reading the shared task list (team_tasks list) and tell the coordinator your plan with team_send.`;
+        await conn.call("task.start", { taskId, prompt, limits: { wallMs: DEFAULT_WALL_MS * 4 } });
+      }
+    } catch (e) {
+      await Promise.allSettled(members.map((m) => pool.get(m.host).call("team.stop", { taskId: m.taskId })));
+      store.end(team.teamId);
+      throw e;
+    }
+    poller.start();
+    const table = members.map((m) => `${m.role}  ${m.host}  ${m.taskId}  ${m.preset}`).join(`
+`);
+    return ok(`Started ${team.teamId}.
+role  host  task  preset
+${table}
+Teammates report with team_send; read them with ladvin_team_inbox (new messages also appear after your tool calls).`);
+  }));
+  server.registerTool("ladvin_team_send", {
+    description: "Message one teammate (by role or task id) or all. Optionally attach local files (they land in the teammate's .ladvin/shared/).",
+    inputSchema: { to: stringType(), text: stringType(), files: arrayType(stringType()).optional() }
+  }, guarded(async (a) => {
+    const team = active();
+    const targets = recipients(team, a.to);
+    const cap = Number(process.env.LADVIN_MAX_SHARE_BYTES) || DEFAULT_MAX_SHARE_BYTES;
+    for (const f of a.files ?? []) {
+      if (!existsSync5(f))
+        throw new ToolError(`Local file not found: ${f}`);
+      if (statSync(f).size > cap)
+        throw new ToolError(`${f} is larger than the share limit (${cap} bytes).`);
+    }
+    const results = await Promise.allSettled(targets.map(async (m) => {
+      const names = [];
+      for (const f of a.files ?? []) {
+        const rel = posix4.join(".ladvin", "shared", basename3(f));
+        await pool.transport(m.host).upload(f, posix4.join(m.cwd.replace(/\\/g, "/"), rel));
+        names.push(rel);
+      }
+      const text = names.length ? `${a.text}
+
+Files for you (relative to your working directory):
+${names.map((n) => `- ${n}`).join(`
+`)}` : a.text;
+      await pool.get(m.host).call("team.send", { taskId: m.taskId, text, from: "local" });
+    }));
+    const failed = results.flatMap((r, i) => r.status === "rejected" ? [`${targets[i].role}: ${r.reason instanceof Error ? r.reason.message : r.reason}`] : []);
+    if (failed.length === targets.length)
+      throw new ToolError(`Not delivered:
+${failed.join(`
+`)}`);
+    return ok(`Sent to ${targets.map((m) => m.role).join(", ")}.${failed.length ? `
+Not delivered:
+${failed.join(`
+`)}` : ""}`);
+  }));
+  server.registerTool("ladvin_team_inbox", {
+    description: "Read new messages from teammates (marks them read). wait_seconds blocks until something arrives (use at sync points).",
+    inputSchema: { wait_seconds: numberType().min(0).max(MAX_WAIT_SECONDS).optional() }
+  }, guarded(async (a) => {
+    const team = store.latest();
+    if (!team)
+      throw new ToolError("No team in this project yet.");
+    const end = Date.now() + (a.wait_seconds ?? 0) * 1000;
+    if (!poller.running() && team.status === "active")
+      poller.start();
+    await poller.pollOnce();
+    while (!store.unread(team.teamId).length && Date.now() < end) {
+      await sleep(250);
+      await poller.pollOnce();
+    }
+    const unread = store.unread(team.teamId);
+    if (!unread.length)
+      return ok("No new messages.");
+    store.markRead(team.teamId, unread.length);
+    return ok(renderInbox(unread));
+  }));
+  server.registerTool("ladvin_team_tasks", {
+    description: "The team's shared task list (yours is canonical; teammates see a synced copy).",
+    inputSchema: {
+      op: enumType(["list", "add", "update"]),
+      title: stringType().optional(),
+      id: stringType().optional(),
+      status: TeamTaskStatus.optional(),
+      owner: stringType().optional(),
+      note: stringType().optional()
+    }
+  }, guarded(async (a) => {
+    const team = active();
+    if (a.op === "list")
+      return ok(renderTasks(team.tasks));
+    if (a.op === "add" && !a.title)
+      throw new ToolError("add needs a title.");
+    if (a.op === "update" && !a.id)
+      throw new ToolError("update needs an id.");
+    const op = a.op === "add" ? { op: "add", title: a.title, ...a.owner ? { owner: a.owner } : {} } : { op: "update", id: a.id, ...a.status ? { status: a.status } : {}, ...a.owner ? { owner: a.owner } : {}, ...a.note ? { note: a.note } : {} };
+    const tasks = applyOp(team.tasks, op, "local");
+    store.save({ ...team, tasks });
+    await syncTasks(pool, team, tasks);
+    return ok(renderTasks(tasks));
+  }));
+  server.registerTool("ladvin_team_end", {
+    description: "End the team: ask teammates to send final notes, wait briefly, stop them, and return the last messages.",
+    inputSchema: { summary: stringType().optional() }
+  }, guarded(async (a) => {
+    const team = active();
+    const wrap = `Wrap up now: send your final notes with team_send, then stop.${a.summary ? `
+Coordinator's summary: ${a.summary}` : ""}`;
+    await Promise.allSettled(team.members.map((m) => pool.get(m.host).call("team.send", { taskId: m.taskId, text: wrap, from: "local" })));
+    const waitMs = Number(process.env.LADVIN_TEAM_END_WAIT_MS) || 60000;
+    const end = Date.now() + waitMs;
+    const sentBy = (taskId) => store.all(team.teamId).filter((e) => e.taskId === taskId).length;
+    const before = new Map(team.members.map((m) => [m.taskId, sentBy(m.taskId)]));
+    while (Date.now() < end) {
+      await poller.pollOnce();
+      const pending = team.members.filter((m) => sentBy(m.taskId) <= before.get(m.taskId));
+      if (!pending.length)
+        break;
+      const states = await Promise.allSettled(pending.map(memberState));
+      if (states.every((s) => s.status === "rejected" || TERMINAL.has(s.value.state)))
+        break;
+      await sleep(250);
+    }
+    await Promise.allSettled(team.members.map((m) => pool.get(m.host).call("team.stop", { taskId: m.taskId })));
+    await poller.pollOnce();
+    poller.stop();
+    store.end(team.teamId);
+    const unread = store.unread(team.teamId);
+    store.markRead(team.teamId, unread.length);
+    return ok(`Ended ${team.teamId}.${unread.length ? `
+Final messages:
+${renderInbox(unread)}` : `
+No final messages.`}`);
+  }));
+  server.registerTool("ladvin_team_resume", {
+    description: "Reconnect to this project's team after a new session: collect messages sent while you were away and wake stopped teammates.",
+    inputSchema: {}
+  }, guarded(async () => {
+    const team = store.latest();
+    if (!team)
+      throw new ToolError("No team in this project.");
+    if (team.status === "ended" && Date.now() - Date.parse(team.endedAt ?? team.createdAt) > 24 * 3600000)
+      throw new ToolError(`${team.teamId} ended more than 24 h ago; start a new team.`);
+    if (team.status === "ended")
+      store.save({ ...team, status: "active", endedAt: undefined });
+    poller.start();
+    await poller.pollOnce();
+    const lines = [];
+    for (const m of team.members) {
+      try {
+        const t = await memberState(m);
+        if (TERMINAL.has(t.state) && t.failReason?.startsWith("stopped:")) {
+          await pool.get(m.host).call("team.send", { taskId: m.taskId, text: "The coordinator is back; continue.", from: "local" });
+          lines.push(`${m.role}@${m.host}: resumed`);
+        } else
+          lines.push(`${m.role}@${m.host}: ${t.state}${t.failReason ? ` (${t.failReason})` : ""}`);
+      } catch (e) {
+        lines.push(`${m.role}@${m.host}: unreachable (${e instanceof Error ? e.message : e})`);
+      }
+    }
+    return ok(`Resumed ${team.teamId}.
+${lines.join(`
+`)}
+${store.unread(team.teamId).length} unread message(s); read them with ladvin_team_inbox.`);
+  }));
+}
+
 // packages/hub/src/hub.ts
 var HUB_VERSION = "0.1.0";
 function createHub(o) {
   const server = new McpServer({ name: "ladvin", version: HUB_VERSION });
   const pool = new ConnectionPool(o.owner, o.transportFor);
+  const store = new TeamStore(o.owner.projectDir);
+  const poller = new TeamPoller({ store, pool, owner: o.owner, projectDir: o.owner.projectDir });
   registerDelegateTools(server, { owner: o.owner, pool });
   registerHostTools(server, { pool });
-  return { server, pool };
+  registerTeamTools(server, { owner: o.owner, pool, store, poller });
+  if (store.active())
+    poller.start();
+  return {
+    server,
+    pool,
+    poller,
+    close() {
+      poller.stop();
+      pool.closeAll();
+    }
+  };
 }
 
 // packages/hub/src/transport.ts
 import { spawn } from "node:child_process";
-import { copyFileSync, mkdirSync as mkdirSync3 } from "node:fs";
-import { basename as basename2, dirname, isAbsolute, join as join4, resolve } from "node:path";
+import { copyFileSync, mkdirSync as mkdirSync5 } from "node:fs";
+import { basename as basename4, dirname, isAbsolute, join as join6, resolve } from "node:path";
 var REMOTE_AGENTD = ".ladvin/bin/ladvin-agentd";
 function run(command, args, opts = {}) {
   return new Promise((r) => {
@@ -20405,7 +20911,7 @@ var shq2 = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 function scpArgs(alias, dir, localPath, remotePath) {
   const isWin = /^[A-Za-z]:[\\/]/.test(localPath) || localPath.includes("\\");
   const dirOf = isWin ? localPath.slice(0, Math.max(localPath.lastIndexOf("\\"), localPath.lastIndexOf("/"))) : dirname(localPath);
-  const name = isWin ? localPath.slice(dirOf.length + 1) : basename2(localPath);
+  const name = isWin ? localPath.slice(dirOf.length + 1) : basename4(localPath);
   const local = `./${name}`;
   const remote = `${alias}:${shq2(homeRelative(remotePath))}`;
   return { cwd: dirOf, args: dir === "upload" ? [local, remote] : [remote, local] };
@@ -20415,8 +20921,8 @@ function sshBase() {
   if (process.env.LADVIN_SSH_CONFIG)
     args.unshift("-F", process.env.LADVIN_SSH_CONFIG);
   if (process.platform !== "win32") {
-    mkdirSync3(ladvinHome(), { recursive: true });
-    args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${join4(ladvinHome(), "cm-%C")}`, "-o", "ControlPersist=10m");
+    mkdirSync5(ladvinHome(), { recursive: true });
+    args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${join6(ladvinHome(), "cm-%C")}`, "-o", "ControlPersist=10m");
   }
   return args;
 }
@@ -20438,7 +20944,7 @@ function sshTransport(alias) {
         throw new Error(`upload to ${alias} failed: ${r.stderr.trim()}`);
     },
     download: async (remotePath, localPath) => {
-      mkdirSync3(dirname(resolve(localPath)), { recursive: true });
+      mkdirSync5(dirname(resolve(localPath)), { recursive: true });
       const { cwd, args } = scpArgs(alias, "download", resolve(localPath), remotePath);
       const r = await run("scp", [...sshBase(), "-q", ...args], { cwd });
       if (r.code !== 0)
@@ -20452,7 +20958,7 @@ var owner = { machineId: machineId(), projectDir: process.env.CLAUDE_PROJECT_DIR
 var hub = createHub({ owner, transportFor: sshTransport });
 await hub.server.connect(new StdioServerTransport);
 var shutdown = () => {
-  hub.pool.closeAll();
+  hub.close();
   process.exit(0);
 };
 process.stdin.on("close", shutdown);
