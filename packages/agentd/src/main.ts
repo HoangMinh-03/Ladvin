@@ -29,6 +29,8 @@ async function serve(): Promise<void> {
   for (const t of store.list())
     if (t.state === "running") store.update(t.taskId, { state: "failed", failReason: "agentd restarted" });
   const srv = await startServer({ store, runner, version: VERSION, onShutdown: () => process.exit(0) });
+  const idleMs = Number(process.env.LADVIN_TEAM_IDLE_MS) || 15 * 60_000;
+  setInterval(() => runner.sweepIdle(Date.now(), srv.lastHubContact, idleMs), 30_000).unref();
   const stop = () => void srv.close().then(() => process.exit(0));
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);

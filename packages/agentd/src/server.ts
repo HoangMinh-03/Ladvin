@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, realpathSync, statSync, unlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Server } from "node:net";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   AgentAttachParams,
   AgentReportParams,
@@ -16,11 +17,39 @@ import {
   TaskListParams,
   TaskPrepareParams,
   TaskStartParams,
+  TeamAckParams,
+  TeamJoinParams,
+  TeamPullParams,
+  TeamSendParams,
+  TeamStopParams,
+  TeamSyncTasksParams,
+  AgentTeamSendParams,
+  AgentShareParams,
+  AgentTasksOpParams,
+  AgentTasksListParams,
+  type Owner,
+  type Preset,
+  type TaskInfo,
 } from "@ladvin/protocol";
 import type { z } from "zod";
-import { socketPath, taskDir } from "./paths";
+import { Outbox } from "./outbox";
+import { ladvinHome, socketPath, taskDir } from "./paths";
 import type { Runner } from "./runner";
 import type { TaskStore } from "./store";
+import { formatIncoming } from "./team-prompt";
+
+export const DEFAULT_MAX_SHARE_BYTES = 200 * 1024 * 1024;
+
+// Only files inside the working directory (after resolving symlinks) may leave the host (spec §9).
+function insideCwd(cwd: string, rel: string): { real: string; inside: string } {
+  const abs = resolve(cwd, rel);
+  if (!existsSync(abs) || !statSync(abs).isFile()) throw new RpcError(ERR_INVALID_PARAMS, `no such file: ${rel}`);
+  const real = realpathSync(abs);
+  const inside = relative(realpathSync(cwd), real);
+  if (!inside || inside.startsWith("..") || isAbsolute(inside))
+    throw new RpcError(ERR_INVALID_PARAMS, `only files inside the working directory can leave this host: ${rel}`);
+  return { real, inside: inside.split(sep).join("/") };
+}
 
 export const ERR_UNKNOWN_TASK = -32004;
 export const ERR_NOT_QUEUED = -32010;
@@ -54,8 +83,28 @@ export async function startServer(o: {
   runner: Runner;
   version: string;
   onShutdown?: () => void;
-}): Promise<{ close(): Promise<void> }> {
+}): Promise<{ close(): Promise<void>; lastHubContact: (teamId: string) => number }> {
   const { store, runner } = o;
+  const outbox = new Outbox(store);
+  // When the hub last pulled each team (spec §6.2 idle timeout). Starts "now" so a fresh agentd does not stop members at once.
+  const startedAt = Date.now();
+  const lastHubContact = new Map<string, number>();
+
+  const prepare = (owner: Owner, cwd: string | undefined, preset: Preset, extra: Partial<TaskInfo>) => {
+    let dir = "";
+    if (cwd) {
+      dir = resolve(homedir(), expandHome(cwd));
+      if (!existsSync(dir) || !statSync(dir).isDirectory())
+        throw new RpcError(ERR_INVALID_PARAMS, `cwd does not exist on this host: ${cwd}`);
+    }
+    const t = store.create({ owner, preset, cwd: dir, prompt: "", ...extra });
+    if (!cwd) {
+      dir = join(taskDir(t.taskId), "work");
+      mkdirSync(dir, { recursive: true });
+      store.update(t.taskId, { cwd: dir });
+    }
+    return { taskId: t.taskId, cwd: dir };
+  };
   const path = socketPath();
   await clearStaleSocket(path);
 
@@ -76,19 +125,89 @@ export async function startServer(o: {
 
     peer.handle("task.prepare", async (p) => {
       const { owner, cwd, preset } = parse(TaskPrepareParams, p);
-      let dir: string;
-      if (cwd) {
-        dir = resolve(expandHome(cwd));
-        if (!isAbsolute(dir) || !existsSync(dir) || !statSync(dir).isDirectory())
-          throw new RpcError(ERR_INVALID_PARAMS, `cwd does not exist on this host: ${cwd}`);
-      } else dir = "";
-      const t = store.create({ owner, preset, cwd: dir, prompt: "" });
-      if (!cwd) {
-        dir = join(taskDir(t.taskId), "work");
-        mkdirSync(dir, { recursive: true });
-        store.update(t.taskId, { cwd: dir });
+      return prepare(owner, cwd, preset, {});
+    });
+
+    // ---- team mode (spec §9) ----
+    peer.handle("team.join", async (p) => {
+      const { owner, teamId, role, goal, cwd, preset } = parse(TeamJoinParams, p);
+      return prepare(owner, cwd, preset, { kind: "team", team: { teamId, role }, prompt: goal });
+    });
+
+    peer.handle("team.send", async (p) => {
+      const { taskId, text, from } = parse(TeamSendParams, p);
+      if (task(taskId).kind !== "team") throw new RpcError(ERR_BAD_STATE, `task ${taskId} is not a team member`);
+      try {
+        await runner.inject(taskId, formatIncoming(from, new Date(), text));
+      } catch (e) {
+        throw new RpcError(ERR_BAD_STATE, e instanceof Error ? e.message : String(e));
       }
-      return { taskId: t.taskId, cwd: dir };
+      return {};
+    });
+
+    peer.handle("team.pull", async (p) => {
+      const { owner } = parse(TeamPullParams, p);
+      const now = Date.now();
+      for (const t of store.list(owner)) if (t.team) lastHubContact.set(t.team.teamId, now);
+      return { messages: outbox.pull(owner) };
+    });
+
+    peer.handle("team.ack", async (p) => {
+      outbox.ack(parse(TeamAckParams, p).ids);
+      return {};
+    });
+
+    peer.handle("team.syncTasks", async (p) => {
+      const { teamId, tasks } = parse(TeamSyncTasksParams, p);
+      const dir = join(ladvinHome(), "teams", teamId.replace(/[^\w-]/g, "_"));
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "tasks.json"), JSON.stringify(tasks, null, 2));
+      return {};
+    });
+
+    peer.handle("team.stop", async (p) => {
+      const { taskId } = parse(TeamStopParams, p);
+      task(taskId);
+      runner.stop(taskId, "team ended");
+      return {};
+    });
+
+    const member = (taskId: string) => {
+      const t = task(taskId);
+      if (t.kind !== "team" || !t.team) throw new RpcError(ERR_BAD_STATE, `task ${taskId} is not a team member`);
+      return { t, team: t.team };
+    };
+
+    peer.handle("agent.teamSend", async (p) => {
+      const { taskId, text } = parse(AgentTeamSendParams, p);
+      const { team } = member(taskId);
+      outbox.append({ kind: "message", teamId: team.teamId, taskId, role: team.role, text });
+      return {};
+    });
+
+    peer.handle("agent.share", async (p) => {
+      const { taskId, path: rel, note } = parse(AgentShareParams, p);
+      const { t, team } = member(taskId);
+      const { real, inside } = insideCwd(t.cwd, rel);
+      const size = statSync(real).size;
+      const cap = Number(process.env.LADVIN_MAX_SHARE_BYTES) || DEFAULT_MAX_SHARE_BYTES;
+      if (size > cap) throw new RpcError(ERR_INVALID_PARAMS, `${rel} is ${size} bytes; the share limit is ${cap} bytes`);
+      const sha256 = createHash("sha256").update(readFileSync(real)).digest("hex");
+      outbox.append({ kind: "file", teamId: team.teamId, taskId, role: team.role, name: basename(real), path: inside, size, sha256, ...(note ? { note } : {}) });
+      return {};
+    });
+
+    peer.handle("agent.tasksOp", async (p) => {
+      const { taskId, op } = parse(AgentTasksOpParams, p);
+      const { team } = member(taskId);
+      outbox.append({ kind: "tasksOp", teamId: team.teamId, taskId, role: team.role, op });
+      return {};
+    });
+
+    peer.handle("agent.tasksList", async (p) => {
+      const { team } = member(parse(AgentTasksListParams, p).taskId);
+      const f = join(ladvinHome(), "teams", team.teamId.replace(/[^\w-]/g, "_"), "tasks.json");
+      return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : [];
     });
 
     peer.handle("task.start", async (p) => {
@@ -146,15 +265,8 @@ export async function startServer(o: {
     peer.handle("agent.attach", async (p) => {
       const { taskId, path: rel, note } = parse(AgentAttachParams, p);
       const t = task(taskId);
-      const abs = resolve(t.cwd, rel);
-      if (!existsSync(abs) || !statSync(abs).isFile()) throw new RpcError(ERR_INVALID_PARAMS, `no such file: ${rel}`);
-      // Only files inside the working directory (after resolving symlinks) may leave the host (spec §9).
-      const root = realpathSync(t.cwd);
-      const real = realpathSync(abs);
-      const inside = relative(root, real);
-      if (!inside || inside.startsWith("..") || isAbsolute(inside))
-        throw new RpcError(ERR_INVALID_PARAMS, `only files inside the working directory can be attached: ${rel}`);
-      store.addArtifact(taskId, { path: inside.split(sep).join("/"), size: statSync(real).size, ...(note ? { note } : {}) });
+      const { real, inside } = insideCwd(t.cwd, rel);
+      store.addArtifact(taskId, { path: inside, size: statSync(real).size, ...(note ? { note } : {}) });
       return {};
     });
 
@@ -187,5 +299,5 @@ export async function startServer(o: {
       for (const s of conns) s.destroy();
       await new Promise<void>((r) => server.close(() => r()));
     })());
-  return { close };
+  return { close, lastHubContact: (teamId) => lastHubContact.get(teamId) ?? startedAt };
 }
