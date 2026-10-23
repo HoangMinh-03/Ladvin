@@ -20,11 +20,13 @@ export function registerHostTools(
       inputSchema: {
         alias: z.string(),
         max_preset: Preset.optional().describe("Highest preset agents on this host may use (default worker; yolo skips all permission checks)"),
+        claude_path: z.string().optional().describe("Full path of claude on the host, if ladvin cannot find it"),
       },
     },
     guarded(async (a) => {
       const r = await addHost(a.alias, {
         maxPreset: a.max_preset,
+        claudePath: a.claude_path,
         transport: pool.transport(a.alias),
         connection: pool.get(a.alias),
         fetchBinary: ctx.fetchBinary,

@@ -39,7 +39,18 @@ function fakeTransport(table: [string, { code?: number; stdout?: string; stderr?
 const connection = { connect: async () => ({ agentdVersion: "0.1.0", clockOffsetMs: 0 }), call: async () => ({}) } as any;
 const fetchBinary = async () => "/cache/ladvin-agentd-linux-x64";
 
-const LOGIN_OK = "claude=/home/u/.local/bin/claude\ntmux=/usr/bin/tmux\n";
+// Output of the single host probe (PROBE in add-host.ts): login-shell view, install-dir candidates, plain view.
+const probe = (o: { path?: string; claude?: string; tmux?: string; cands?: string[]; plainclaude?: string; plaintmux?: string }) =>
+  [
+    `path=${o.path ?? ""}`,
+    `claude=${o.claude ?? ""}`,
+    `tmux=${o.tmux ?? ""}`,
+    ...(o.cands ?? []).map((c) => `cand=${c}`),
+    "plainpath=/usr/bin:/bin",
+    `plainclaude=${o.plainclaude ?? ""}`,
+    `plaintmux=${o.plaintmux ?? ""}`,
+  ].join("\n") + "\n";
+const LOGIN_OK = probe({ path: "/home/u/.local/bin:/usr/bin", claude: "/home/u/.local/bin/claude", tmux: "/usr/bin/tmux" });
 
 test("unsupported OS is refused", async () => {
   const { t } = fakeTransport([["uname", { stdout: "MINGW64_NT-10.0 x86_64\n" }]]);
@@ -57,12 +68,15 @@ test("unreachable host reports the ssh error", async () => {
 test("claude found only on the login-shell PATH is resolved and stored", async () => {
   const { t, execs, uploads } = fakeTransport([
     ["uname", { stdout: "Linux x86_64\n" }],
-    ["-lc", { stdout: LOGIN_OK }],
-    ["command -v", { stdout: "claude=\ntmux=/usr/bin/tmux\n" }],
+    ["command -v", { stdout: LOGIN_OK }],
   ]);
   const r = await addHost("box", { transport: t, connection, fetchBinary });
   expect(r.host).toMatchObject({ alias: "box", os: "linux", arch: "x64", maxPreset: "worker", agentdVersion: "0.1.0" });
-  expect(execs.some((c) => c.includes("agentd.json") && c.includes("/home/u/.local/bin/claude"))).toBe(true);
+  const install = execs.find((c) => c.includes("agentd.json"))!;
+  expect(install).toContain("/home/u/.local/bin/claude");
+  expect(install).toContain("/home/u/.local/bin:/usr/bin");
+  // the login probe runs claude with the captured PATH, not the bare ssh PATH
+  expect(execs.find((c) => c.includes("reply ok"))).toContain("PATH=");
   expect(uploads).toEqual([["/cache/ladvin-agentd-linux-x64", "~/.ladvin/bin/ladvin-agentd.new"]]);
   expect(loadHosts().map((h) => h.alias)).toEqual(["box"]);
 });
@@ -70,17 +84,17 @@ test("claude found only on the login-shell PATH is resolved and stored", async (
 test("missing claude gives the exact fix", async () => {
   const { t } = fakeTransport([
     ["uname", { stdout: "Darwin arm64\n" }],
-    ["command -v", { stdout: "claude=\ntmux=/opt/homebrew/bin/tmux\n" }],
+    ["command -v", { stdout: probe({ tmux: "/opt/homebrew/bin/tmux" }) }],
   ]);
   const r = await addHost("mac", { transport: t, connection, fetchBinary });
   expect(r.host).toBeUndefined();
-  expect(r.lines).toContain('claude not found on mac. Install it there, then run "claude" once to log in.');
+  expect(r.lines).toContain('claude not found on mac. Install it there and run "claude" once to log in, or pass its full path as claude_path.');
 });
 
 test("missing tmux gives the exact fix", async () => {
   const { t } = fakeTransport([
     ["uname", { stdout: "Linux aarch64\n" }],
-    ["command -v", { stdout: "claude=/usr/bin/claude\ntmux=\n" }],
+    ["command -v", { stdout: probe({ claude: "/usr/bin/claude" }) }],
   ]);
   const r = await addHost("pi", { transport: t, connection, fetchBinary });
   expect(r.lines).toContain("tmux not found on pi. Install it (e.g. apt install tmux / brew install tmux).");
@@ -138,4 +152,33 @@ test("scp args never pass a Windows drive path and keep remote paths home-relati
   expect(up.args.some((a) => a.includes("'~"))).toBe(false);
   const down = scpArgs("h", "download", "/home/me/p/out.log", "/srv/app/out.log");
   expect(down).toEqual({ cwd: "/home/me/p", args: ["h:'/srv/app/out.log'", "./out.log"] });
+});
+
+test("an nvm-installed claude missed by the login shell is found in a well-known location", async () => {
+  const nvm = "/home/u/.nvm/versions/node/v22.1.0/bin/claude";
+  const { t, execs } = fakeTransport([
+    ["uname", { stdout: "Linux x86_64\n" }],
+    ["command -v", { stdout: probe({ path: "/usr/bin", tmux: "/usr/bin/tmux", cands: [nvm] }) }],
+  ]);
+  const r = await addHost("box", { transport: t, connection, fetchBinary });
+  expect(r.host).toBeDefined();
+  const install = execs.find((c) => c.includes("agentd.json"))!;
+  expect(install).toContain(nvm);
+  expect(install).toContain("/home/u/.nvm/versions/node/v22.1.0/bin:"); // node lives next to claude
+});
+
+test("an explicit claude path overrides discovery", async () => {
+  const { t, execs } = fakeTransport([
+    ["uname", { stdout: "Linux x86_64\n" }],
+    ["command -v", { stdout: probe({ tmux: "/usr/bin/tmux" }) }],
+  ]);
+  const r = await addHost("box", { transport: t, connection, fetchBinary, claudePath: "/opt/claude/bin/claude" });
+  expect(r.host).toBeDefined();
+  expect(execs.find((c) => c.includes("agentd.json"))).toContain("/opt/claude/bin/claude");
+});
+
+test("probe and install commands are wrapped in sh -c so non-POSIX login shells (fish, csh) work", async () => {
+  const { t, execs } = fakeTransport([["uname", { stdout: "Linux x86_64\n" }], ["command -v", { stdout: LOGIN_OK }]]);
+  await addHost("box", { transport: t, connection, fetchBinary });
+  for (const c of execs.filter((c) => c.includes("command -v") || c.includes("agentd.json") || c.includes("reply ok"))) expect(c.startsWith("sh -c ")).toBe(true);
 });

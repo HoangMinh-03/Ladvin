@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { configPath, ladvinHome, logPath, socketPath } from "./paths";
 
-export type AgentdConfig = { claudeBin?: string; claudeArgs?: string[]; tmuxBin?: string };
+// Written by add-host. `path` is the login-shell PATH captured there (nvm/npm installs need their node).
+export type AgentdConfig = { claudeBin?: string; claudeArgs?: string[]; tmuxBin?: string; path?: string };
 
 export function loadConfig(): AgentdConfig {
   const p = configPath();
