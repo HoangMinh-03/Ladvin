@@ -7,7 +7,7 @@ const owner = { machineId: machineId(), projectDir: process.env.CLAUDE_PROJECT_D
 const hub = createHub({ owner, transportFor: sshTransport });
 await hub.server.connect(new StdioServerTransport());
 const shutdown = () => {
-  hub.pool.closeAll();
+  hub.close();
   process.exit(0);
 };
 process.stdin.on("close", shutdown);
