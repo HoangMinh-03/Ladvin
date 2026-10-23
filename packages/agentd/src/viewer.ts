@@ -1,7 +1,8 @@
-import { existsSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parseEvent } from "./claude";
 import { taskDir } from "./paths";
+import { TaskStore } from "./store";
 
 export function renderEvent(line: string): string | null {
   const ev = parseEvent(line);
@@ -22,29 +23,48 @@ export function renderEvent(line: string): string | null {
   }
 }
 
-// Follows stream.jsonl forever, printing human-readable lines. Used inside the task's tmux session.
-export async function view(taskId: string): Promise<never> {
+const TERMINAL = new Set(["done", "failed", "cancelled"]);
+
+// Follows stream.jsonl, printing human-readable lines. Runs inside the task's tmux session and returns
+// (ending that session) `lingerMs` after the task reaches a terminal state.
+export async function view(
+  taskId: string,
+  o: { pollMs?: number; lingerMs?: number; write?: (s: string) => void } = {},
+): Promise<void> {
+  const { pollMs = 500, lingerMs = 10 * 60_000 } = o;
+  const write = o.write ?? ((s: string) => void process.stdout.write(s));
   const file = join(taskDir(taskId), "stream.jsonl");
+  const store = new TaskStore();
   let pos = 0;
   let buf = "";
-  process.stdout.write(`ladvin agent ${taskId} — Ctrl-b d to detach\n\n`);
+  write(`ladvin agent ${taskId} — Ctrl-b d to detach\n\n`);
   for (;;) {
+    const terminal = TERMINAL.has(store.get(taskId)?.state ?? "");
     if (existsSync(file)) {
       const size = statSync(file).size;
       if (size > pos) {
         const fd = openSync(file, "r");
         const chunk = Buffer.alloc(size - pos);
-        readSync(fd, chunk, 0, chunk.length, pos);
+        try {
+          readSync(fd, chunk, 0, chunk.length, pos);
+        } finally {
+          closeSync(fd);
+        }
         pos = size;
         buf += chunk.toString("utf8");
         let i: number;
         while ((i = buf.indexOf("\n")) >= 0) {
           const out = renderEvent(buf.slice(0, i));
           buf = buf.slice(i + 1);
-          if (out) process.stdout.write(out + "\n");
+          if (out) write(out + "\n");
         }
       }
     }
-    await new Promise((r) => setTimeout(r, 500));
+    if (terminal) {
+      write(`\n— task finished; this view closes in ${Math.round(lingerMs / 1000)}s —\n`);
+      await new Promise((r) => setTimeout(r, lingerMs));
+      return;
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
   }
 }

@@ -46,6 +46,7 @@ switch (cmd) {
     break;
   case "view":
     await view(arg!);
+    process.exit(0);
     break;
   case "version":
     console.log(`ladvin-agentd ${VERSION} protocol ${PROTOCOL_MAJOR}`);

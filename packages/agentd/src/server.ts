@@ -123,7 +123,7 @@ export async function startServer(o: {
       const { taskId, text } = parse(TaskFollowupParams, p);
       task(taskId);
       try {
-        runner.followup(taskId, text);
+        await runner.followup(taskId, text);
       } catch (e) {
         throw new RpcError(ERR_BAD_STATE, e instanceof Error ? e.message : String(e));
       }

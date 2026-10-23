@@ -14,6 +14,7 @@ export type RunnerOptions = {
   claudeBinArgs?: string[];
   agentMcpCommand: (taskId: string) => { command: string; args: string[] };
   viewCommand?: (taskId: string) => string;
+  env?: Record<string, string>; // merged into claude's env (add-host stores the login-shell PATH here)
   tmux?: Tmux;
   now?: () => Date;
 };
@@ -25,6 +26,9 @@ type Live = {
   finished: boolean; // done/failed/cancelled already decided for this run
   denials: string[];
   timer: ReturnType<typeof setTimeout>;
+  // Usage of the current turn from assistant events (deduped by message id), superseded by `result`.
+  turnUsage: Usage;
+  seenMessages: Set<string>;
 };
 
 const addUsage = (a: Usage, b: Usage): Usage => ({
@@ -53,17 +57,15 @@ export class Runner {
     this.o.tmux?.openView(taskId, this.o.viewCommand?.(taskId) ?? "");
   }
 
-  followup(taskId: string, text: string): void {
-    const t = this.o.store.get(taskId);
-    if (!t) throw new Error(`unknown task ${taskId}`);
+  async followup(taskId: string, text: string): Promise<void> {
+    if (!this.o.store.get(taskId)) throw new Error(`unknown task ${taskId}`);
     const prev = this.live.get(taskId);
     if (prev && !prev.finished) throw new Error(`task ${taskId} is still running`);
+    // Previous run decided but its process is still exiting: resume once it is gone.
+    if (prev) await new Promise((r) => prev.proc.once("exit", r));
+    if (this.live.has(taskId)) throw new Error(`task ${taskId} is still running`);
+    const t = this.o.store.get(taskId)!;
     if (!t.sessionId) throw new Error(`task ${taskId} has no session to resume`);
-    if (prev) {
-      // Previous run decided but its process is still exiting: resume once it is gone.
-      prev.proc.once("exit", () => setImmediate(() => this.followup(taskId, text)));
-      return;
-    }
     this.o.store.archiveReport(taskId, t.runs);
     this.o.store.update(taskId, { runs: t.runs + 1, failReason: undefined, endedAt: undefined });
     this.spawnRun(taskId, text, t.sessionId);
@@ -100,7 +102,7 @@ export class Runner {
     const args = buildArgs({ preset: t.preset, cwd: t.cwd, mcpConfigPath, systemPrompt: DELEGATE_SYSTEM_PROMPT, resumeSessionId });
     const proc = spawn(this.o.claudeBin, [...(this.o.claudeBinArgs ?? []), ...args], {
       cwd: t.cwd,
-      env: process.env,
+      env: { ...process.env, ...this.o.env },
       stdio: ["pipe", "pipe", "pipe"],
     });
     const wallMs = t.limits?.wallMs ?? DEFAULT_WALL_MS;
@@ -111,7 +113,14 @@ export class Runner {
       finished: false,
       denials: [],
       timer: setTimeout(() => this.cancel(taskId, "limit: wall"), wallMs),
+      turnUsage: { ...ZERO_USAGE },
+      seenMessages: new Set(),
     };
+    // Spawn failures (moved claude binary, deleted cwd) emit "error" and may never emit "exit".
+    proc.on("error", (e) => {
+      if (!live.finished) this.finish(taskId, { state: "failed", failReason: `cannot start claude: ${e.message}` });
+      if (this.live.get(taskId) === live) this.live.delete(taskId);
+    });
     this.live.set(taskId, live);
     this.o.store.update(taskId, { state: "running" });
 
@@ -141,7 +150,16 @@ export class Runner {
       if (ev.text) live.lastText = ev.text;
       const activity = ev.toolUses.at(-1) ?? ev.text.split("\n")[0];
       if (activity) this.o.store.update(taskId, { lastActivity: activity.slice(0, 200) });
+      // A delegated task is often one long turn: enforce max tokens as usage streams in, not only at `result`.
+      if (ev.usage && ev.id && !live.seenMessages.has(ev.id)) {
+        live.seenMessages.add(ev.id);
+        live.turnUsage = addUsage(live.turnUsage, ev.usage);
+        const t = this.o.store.get(taskId)!;
+        if (t.limits?.maxTokens && billable(addUsage(t.usage, live.turnUsage)) > t.limits.maxTokens) this.cancel(taskId, "limit: tokens");
+      }
     } else if (ev.kind === "result") {
+      live.turnUsage = { ...ZERO_USAGE };
+      live.seenMessages.clear();
       const t = this.o.store.get(taskId)!;
       const usage = addUsage(t.usage, ev.usage);
       this.o.store.update(taskId, { usage });
