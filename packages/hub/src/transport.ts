@@ -43,7 +43,10 @@ export function scpArgs(alias: string, dir: "upload" | "download", localPath: st
   const dirOf = isWin ? localPath.slice(0, Math.max(localPath.lastIndexOf("\\"), localPath.lastIndexOf("/"))) : dirname(localPath);
   const name = isWin ? localPath.slice(dirOf.length + 1) : basename(localPath);
   const local = `./${name}`;
-  const remote = `${alias}:${shq(homeRelative(remotePath))}`;
+  // SFTP-mode scp (OpenSSH ≥ 9 default) does not use a remote shell, so quotes would become part of the
+  // name; only paths with shell-special characters are quoted (needed by legacy scp).
+  const rel = homeRelative(remotePath);
+  const remote = `${alias}:${/^[\w@%+=:,./-]+$/.test(rel) ? rel : shq(rel)}`;
   return { cwd: dirOf, args: dir === "upload" ? [local, remote] : [remote, local] };
 }
 

@@ -151,7 +151,7 @@ test("scp args never pass a Windows drive path and keep remote paths home-relati
   expect(up.args).toEqual(["./a b.txt", "h:'x/a b.txt'"]);
   expect(up.args.some((a) => a.includes("'~"))).toBe(false);
   const down = scpArgs("h", "download", "/home/me/p/out.log", "/srv/app/out.log");
-  expect(down).toEqual({ cwd: "/home/me/p", args: ["h:'/srv/app/out.log'", "./out.log"] });
+  expect(down).toEqual({ cwd: "/home/me/p", args: ["h:/srv/app/out.log", "./out.log"] });
 });
 
 test("an nvm-installed claude missed by the login shell is found in a well-known location", async () => {
@@ -253,4 +253,12 @@ test("new binary while idle: daemon restarted on it", async () => {
   const r = await addHost("box", { transport: t, connection, fetchBinary: async () => bin.path });
   expect(calls).toContain("shutdown");
   expect(r.lines).toContain("✓ restarted agentd on the new binary");
+});
+
+test("plain remote paths are passed unquoted (SFTP-mode scp takes quotes literally)", () => {
+  expect(scpArgs("h", "upload", "/tmp/ladvin-agentd-linux-x64", "~/.ladvin/bin/ladvin-agentd.new").args).toEqual([
+    "./ladvin-agentd-linux-x64",
+    "h:.ladvin/bin/ladvin-agentd.new",
+  ]);
+  expect(scpArgs("h", "download", "/home/me/p/out.log", "/srv/app/out.log").args[0]).toBe("h:/srv/app/out.log");
 });

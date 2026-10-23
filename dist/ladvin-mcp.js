@@ -21438,7 +21438,8 @@ function scpArgs(alias, dir, localPath, remotePath) {
   const dirOf = isWin ? localPath.slice(0, Math.max(localPath.lastIndexOf("\\"), localPath.lastIndexOf("/"))) : dirname(localPath);
   const name = isWin ? localPath.slice(dirOf.length + 1) : basename3(localPath);
   const local = `./${name}`;
-  const remote = `${alias}:${shq3(homeRelative(remotePath))}`;
+  const rel = homeRelative(remotePath);
+  const remote = `${alias}:${/^[\w@%+=:,./-]+$/.test(rel) ? rel : shq3(rel)}`;
   return { cwd: dirOf, args: dir === "upload" ? [local, remote] : [remote, local] };
 }
 function sshBase() {
