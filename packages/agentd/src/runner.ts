@@ -1,0 +1,209 @@
+import { type ChildProcess, spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { DEFAULT_WALL_MS, type Report, type ReportStatus, type Usage, ZERO_USAGE } from "@ladvin/protocol";
+import { buildArgs, DELEGATE_SYSTEM_PROMPT, parseEvent, userMessage } from "./claude";
+import { taskDir } from "./paths";
+import type { TaskStore } from "./store";
+import type { Tmux } from "./tmux";
+
+export type RunnerOptions = {
+  store: TaskStore;
+  hostName: string;
+  claudeBin: string;
+  claudeBinArgs?: string[];
+  agentMcpCommand: (taskId: string) => { command: string; args: string[] };
+  viewCommand?: (taskId: string) => string;
+  tmux?: Tmux;
+  now?: () => Date;
+};
+
+type Live = {
+  proc: ChildProcess;
+  startedAt: string;
+  lastText: string;
+  finished: boolean; // done/failed/cancelled already decided for this run
+  denials: string[];
+  timer: ReturnType<typeof setTimeout>;
+};
+
+const addUsage = (a: Usage, b: Usage): Usage => ({
+  input: a.input + b.input,
+  output: a.output + b.output,
+  cacheRead: a.cacheRead + b.cacheRead,
+  cacheWrite: a.cacheWrite + b.cacheWrite,
+});
+const billable = (u: Usage) => u.input + u.output + u.cacheWrite;
+
+export class Runner {
+  private live = new Map<string, Live>();
+  constructor(private o: RunnerOptions) {}
+
+  private now(): string {
+    return (this.o.now?.() ?? new Date()).toISOString();
+  }
+
+  running(): string[] {
+    return [...this.live].filter(([, l]) => !l.finished).map(([id]) => id);
+  }
+
+  start(taskId: string, prompt: string): void {
+    this.o.store.update(taskId, { prompt, startedAt: this.now(), runs: 1 });
+    this.spawnRun(taskId, prompt);
+    this.o.tmux?.openView(taskId, this.o.viewCommand?.(taskId) ?? "");
+  }
+
+  followup(taskId: string, text: string): void {
+    const t = this.o.store.get(taskId);
+    if (!t) throw new Error(`unknown task ${taskId}`);
+    const prev = this.live.get(taskId);
+    if (prev && !prev.finished) throw new Error(`task ${taskId} is still running`);
+    if (!t.sessionId) throw new Error(`task ${taskId} has no session to resume`);
+    if (prev) {
+      // Previous run decided but its process is still exiting: resume once it is gone.
+      prev.proc.once("exit", () => setImmediate(() => this.followup(taskId, text)));
+      return;
+    }
+    this.o.store.archiveReport(taskId, t.runs);
+    this.o.store.update(taskId, { runs: t.runs + 1, failReason: undefined, endedAt: undefined });
+    this.spawnRun(taskId, text, t.sessionId);
+  }
+
+  cancel(taskId: string, reason = "cancelled"): void {
+    const l = this.live.get(taskId);
+    if (!l) return;
+    this.finish(taskId, reason === "cancelled" ? { state: "cancelled" } : { state: "failed", failReason: reason });
+    l.proc.kill();
+  }
+
+  // Cancels every live run and resolves once all claude processes have exited.
+  async stopAll(reason = "cancelled"): Promise<void> {
+    const exits = [...this.live.values()].map((l) => new Promise((r) => l.proc.once("exit", r)));
+    for (const id of [...this.live.keys()]) this.cancel(id, reason);
+    for (const l of this.live.values()) l.proc.kill();
+    await Promise.all(exits);
+  }
+
+  onAgentReport(taskId: string, r: { summary: string; status: ReportStatus; details?: string }): void {
+    if (!this.live.has(taskId)) return;
+    this.finish(taskId, { state: "done", report: { ...r, reportMissing: false } });
+  }
+
+  private spawnRun(taskId: string, text: string, resumeSessionId?: string): void {
+    const t = this.o.store.get(taskId)!;
+    const mcpConfigPath = join(taskDir(taskId), "mcp.json");
+    const mcp = this.o.agentMcpCommand(taskId);
+    writeFileSync(
+      mcpConfigPath,
+      JSON.stringify({ mcpServers: { ladvin: { command: mcp.command, args: mcp.args, env: { LADVIN_HOME: process.env.LADVIN_HOME ?? "" } } } }),
+    );
+    const args = buildArgs({ preset: t.preset, cwd: t.cwd, mcpConfigPath, systemPrompt: DELEGATE_SYSTEM_PROMPT, resumeSessionId });
+    const proc = spawn(this.o.claudeBin, [...(this.o.claudeBinArgs ?? []), ...args], {
+      cwd: t.cwd,
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const wallMs = t.limits?.wallMs ?? DEFAULT_WALL_MS;
+    const live: Live = {
+      proc,
+      startedAt: this.now(),
+      lastText: "",
+      finished: false,
+      denials: [],
+      timer: setTimeout(() => this.cancel(taskId, "limit: wall"), wallMs),
+    };
+    this.live.set(taskId, live);
+    this.o.store.update(taskId, { state: "running" });
+
+    let buf = "";
+    proc.stdout!.setEncoding("utf8");
+    proc.stdout!.on("data", (chunk: string) => {
+      buf += chunk;
+      let i: number;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (line.trim()) this.onLine(taskId, live, line);
+      }
+    });
+    proc.stderr!.on("data", () => {});
+    proc.stdin!.on("error", () => {});
+    proc.on("exit", (code) => this.onExit(taskId, live, code));
+    proc.stdin!.write(userMessage(text));
+  }
+
+  private onLine(taskId: string, live: Live, line: string): void {
+    this.o.store.appendStream(taskId, line);
+    const ev = parseEvent(line);
+    if (!ev) return;
+    if (ev.kind === "init") this.o.store.update(taskId, { sessionId: ev.sessionId });
+    else if (ev.kind === "assistant") {
+      if (ev.text) live.lastText = ev.text;
+      const activity = ev.toolUses.at(-1) ?? ev.text.split("\n")[0];
+      if (activity) this.o.store.update(taskId, { lastActivity: activity.slice(0, 200) });
+    } else if (ev.kind === "result") {
+      const t = this.o.store.get(taskId)!;
+      const usage = addUsage(t.usage, ev.usage);
+      this.o.store.update(taskId, { usage });
+      live.denials.push(...ev.permissionDenials);
+      const report = this.o.store.getReport(taskId);
+      if (report && live.finished) this.o.store.setReport(taskId, { ...report, usage, permissionDenials: live.denials });
+      if (t.limits?.maxTokens && billable(usage) > t.limits.maxTokens) {
+        this.cancel(taskId, "limit: tokens");
+        return;
+      }
+      if (!live.finished) {
+        this.finish(taskId, {
+          state: ev.isError ? "failed" : "done",
+          failReason: ev.isError ? "claude reported an error" : undefined,
+          report: {
+            summary: ev.text || live.lastText,
+            status: ev.isError ? "failed" : "partial",
+            reportMissing: true,
+          },
+        });
+      }
+    }
+  }
+
+  private finish(
+    taskId: string,
+    f: {
+      state: "done" | "failed" | "cancelled";
+      failReason?: string;
+      report?: { summary: string; status: ReportStatus; details?: string; reportMissing: boolean };
+    },
+  ): void {
+    const live = this.live.get(taskId);
+    if (!live || live.finished) return;
+    live.finished = true;
+    clearTimeout(live.timer);
+    const endedAt = this.now();
+    const t = this.o.store.update(taskId, { state: f.state, failReason: f.failReason, endedAt });
+    const r = f.report ?? {
+      summary: f.failReason ?? f.state,
+      status: "failed" as const,
+      reportMissing: true,
+    };
+    const report: Report = {
+      taskId,
+      host: this.o.hostName,
+      status: r.status,
+      summary: r.summary,
+      details: r.details,
+      artifacts: this.o.store.artifacts(taskId),
+      usage: t.usage ?? { ...ZERO_USAGE },
+      startedAt: live.startedAt,
+      endedAt,
+      reportMissing: r.reportMissing,
+      permissionDenials: live.denials,
+    };
+    this.o.store.setReport(taskId, report);
+    live.proc.stdin?.end();
+  }
+
+  private onExit(taskId: string, live: Live, code: number | null): void {
+    if (!live.finished) this.finish(taskId, { state: "failed", failReason: `claude exited with code ${code}` });
+    this.live.delete(taskId);
+  }
+}
