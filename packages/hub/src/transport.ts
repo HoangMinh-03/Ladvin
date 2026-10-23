@@ -47,8 +47,8 @@ export function scpArgs(alias: string, dir: "upload" | "download", localPath: st
   return { cwd: dirOf, args: dir === "upload" ? [local, remote] : [remote, local] };
 }
 
-function sshBase(): string[] {
-  const args = ["-o", "BatchMode=yes", "-o", "ServerAliveInterval=30"];
+export function sshBase(): string[] {
+  const args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30"];
   if (process.env.LADVIN_SSH_CONFIG) args.unshift("-F", process.env.LADVIN_SSH_CONFIG);
   if (process.platform !== "win32") {
     mkdirSync(ladvinHome(), { recursive: true });

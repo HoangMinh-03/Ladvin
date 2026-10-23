@@ -182,3 +182,8 @@ test("probe and install commands are wrapped in sh -c so non-POSIX login shells 
   await addHost("box", { transport: t, connection, fetchBinary });
   for (const c of execs.filter((c) => c.includes("command -v") || c.includes("agentd.json") || c.includes("reply ok"))) expect(c.startsWith("sh -c ")).toBe(true);
 });
+
+test("ssh never waits long on a dead host", async () => {
+  const { sshBase } = await import("../src/transport");
+  expect(sshBase().join(" ")).toContain("ConnectTimeout=10");
+});

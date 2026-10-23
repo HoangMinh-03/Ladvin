@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { connect, createServer, type Server } from "node:net";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   AgentAttachParams,
   AgentReportParams,
@@ -146,9 +146,15 @@ export async function startServer(o: {
     peer.handle("agent.attach", async (p) => {
       const { taskId, path: rel, note } = parse(AgentAttachParams, p);
       const t = task(taskId);
-      const abs = resolve(t.cwd, expandHome(rel));
+      const abs = resolve(t.cwd, rel);
       if (!existsSync(abs) || !statSync(abs).isFile()) throw new RpcError(ERR_INVALID_PARAMS, `no such file: ${rel}`);
-      store.addArtifact(taskId, { path: rel, size: statSync(abs).size, ...(note ? { note } : {}) });
+      // Only files inside the working directory (after resolving symlinks) may leave the host (spec §9).
+      const root = realpathSync(t.cwd);
+      const real = realpathSync(abs);
+      const inside = relative(root, real);
+      if (!inside || inside.startsWith("..") || isAbsolute(inside))
+        throw new RpcError(ERR_INVALID_PARAMS, `only files inside the working directory can be attached: ${rel}`);
+      store.addArtifact(taskId, { path: inside.split(sep).join("/"), size: statSync(real).size, ...(note ? { note } : {}) });
       return {};
     });
 

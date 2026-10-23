@@ -20169,17 +20169,16 @@ ${inputs.map((p) => `- ${p}`).join(`
     return ok(`Follow-up sent to ${a.task_id}; it is running again.`);
   }));
   server.registerTool("ladvin_stop_all", { description: "Kill switch: cancel every running ladvin agent on every registered host (all projects).", inputSchema: {} }, guarded(async () => {
-    const lines = [];
+    const hosts = loadHosts();
+    const results = await Promise.allSettled(hosts.map((h) => pool.get(h.alias).call("task.cancelAll", {})));
     let total = 0;
-    for (const h of loadHosts()) {
-      try {
-        const { cancelled } = await pool.get(h.alias).call("task.cancelAll", {});
-        total += cancelled;
-        lines.push(`${h.alias}: ${cancelled} cancelled`);
-      } catch (e) {
-        lines.push(`${h.alias}: unreachable (${e instanceof Error ? e.message : e})`);
-      }
-    }
+    const lines = results.map((r, i) => {
+      const alias = hosts[i].alias;
+      if (r.status === "rejected")
+        return `${alias}: unreachable (${r.reason instanceof Error ? r.reason.message : r.reason})`;
+      total += r.value.cancelled;
+      return `${alias}: ${r.value.cancelled} cancelled`;
+    });
     return ok(`Cancelled ${total} agent(s).
 ${lines.join(`
 `)}`);
@@ -20199,15 +20198,24 @@ function parseUname(out) {
   const arch = machine === "x86_64" || machine === "amd64" ? "x64" : machine === "aarch64" || machine === "arm64" ? "arm64" : null;
   return os && arch ? { os, arch } : null;
 }
-function parseTools(out) {
-  const get = (k) => out.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1]?.trim() || undefined;
-  return { claude: get("claude"), tmux: get("tmux") };
-}
-async function resolveTools(t) {
-  const probe = `echo claude=$(command -v claude); echo tmux=$(command -v tmux)`;
-  const login = parseTools((await t.exec(`\${SHELL:-/bin/sh} -lc ${shq(probe)}`)).stdout);
-  const plain = parseTools((await t.exec(probe)).stdout);
-  return { claude: login.claude ?? plain.claude, tmux: login.tmux ?? plain.tmux };
+var posix2 = (script) => `sh -c ${shq(script)}`;
+var PROBE = [
+  `L=$("\${SHELL:-/bin/sh}" -lc 'echo "path=$PATH"; echo "claude=$(command -v claude)"; echo "tmux=$(command -v tmux)"' 2>/dev/null </dev/null)`,
+  `printf '%s\\n' "$L" | grep -E '^(path|claude|tmux)='`,
+  `for c in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" "$HOME/.npm-global/bin/claude" "$HOME"/.nvm/versions/node/*/bin/claude /usr/local/bin/claude /opt/homebrew/bin/claude /usr/bin/tmux /usr/local/bin/tmux /opt/homebrew/bin/tmux; do [ -x "$c" ] && echo "cand=$c"; done`,
+  `echo "plainpath=$PATH"; echo "plainclaude=$(command -v claude)"; echo "plaintmux=$(command -v tmux)"`
+].join(`
+`);
+function parseProbe(out, claudeOverride) {
+  const one = (k) => out.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1]?.trim() || undefined;
+  const cands = [...out.matchAll(/^cand=(.+)$/gm)].map((m) => m[1].trim());
+  const cand = (name) => cands.filter((c) => c.endsWith(`/${name}`)).sort().reverse()[0];
+  const claude = claudeOverride ?? one("claude") ?? one("plainclaude") ?? cand("claude");
+  const tmux = one("tmux") ?? one("plaintmux") ?? cand("tmux");
+  const dir = (p) => p ? p.slice(0, p.lastIndexOf("/")) : undefined;
+  const parts = [dir(claude), dir(tmux), ...(one("path") ?? "").split(":"), ...(one("plainpath") ?? "").split(":")];
+  const path = [...new Set(parts.filter((p) => !!p))].join(":");
+  return { claude, tmux, path };
 }
 async function downloadBinary(os, arch, version, o = {}) {
   const name = `ladvin-agentd-${os}-${arch}`;
@@ -20252,16 +20260,17 @@ async function addHost(alias, o) {
   if (!plat)
     return { lines: [`unsupported OS/arch: ${un.stdout.trim()} (ladvin supports Linux and macOS, x64/arm64)`] };
   lines.push(`✓ ${alias}: ${plat.os}/${plat.arch}`);
-  const tools = await resolveTools(t);
+  const tools = parseProbe((await t.exec(posix2(PROBE))).stdout, o.claudePath);
   if (!tools.claude)
-    lines.push(`claude not found on ${alias}. Install it there, then run "claude" once to log in.`);
+    lines.push(`claude not found on ${alias}. Install it there and run "claude" once to log in, or pass its full path as claude_path.`);
   if (!tools.tmux)
     lines.push(`tmux not found on ${alias}. Install it (e.g. apt install tmux / brew install tmux).`);
   if (!tools.claude || !tools.tmux)
     return { lines };
   lines.push(`✓ claude: ${tools.claude}`, `✓ tmux: ${tools.tmux}`);
+  const withPath = (cmd) => posix2(`PATH=${shq(tools.path)}; export PATH; ${cmd}`);
   if (!o.skipLoginCheck) {
-    const probe = await t.exec(`${shq(tools.claude)} -p --model haiku 'reply ok'`, 120000);
+    const probe = await t.exec(withPath(`exec ${shq(tools.claude)} -p --model haiku 'reply ok' </dev/null`), 120000);
     if (probe.code !== 0)
       return {
         lines: [...lines, `claude on ${alias} is not logged in or cannot run (${(probe.stderr || probe.stdout).trim().slice(0, 200)}). Run "claude" on ${alias} once to log in.`]
@@ -20269,12 +20278,12 @@ async function addHost(alias, o) {
     lines.push("✓ claude is logged in");
   }
   const local = await (o.fetchBinary ?? downloadBinary)(plat.os, plat.arch, AGENTD_VERSION);
-  const mk = await t.exec("mkdir -p ~/.ladvin/bin");
+  const mk = await t.exec(posix2("mkdir -p ~/.ladvin/bin && chmod 700 ~/.ladvin"));
   if (mk.code !== 0)
     return { lines: [...lines, `cannot create ~/.ladvin on ${alias}: ${mk.stderr.trim()}`] };
   await t.upload(local, "~/.ladvin/bin/ladvin-agentd.new");
-  const cfg = JSON.stringify({ claudeBin: tools.claude, tmuxBin: tools.tmux });
-  const inst = await t.exec(`chmod +x ~/.ladvin/bin/ladvin-agentd.new && mv -f ~/.ladvin/bin/ladvin-agentd.new ~/.ladvin/bin/ladvin-agentd && printf '%s' ${shq(cfg)} > ~/.ladvin/agentd.json`);
+  const cfg = JSON.stringify({ claudeBin: tools.claude, tmuxBin: tools.tmux, path: tools.path });
+  const inst = await t.exec(posix2(`chmod +x ~/.ladvin/bin/ladvin-agentd.new && mv -f ~/.ladvin/bin/ladvin-agentd.new ~/.ladvin/bin/ladvin-agentd && printf '%s' ${shq(cfg)} > ~/.ladvin/agentd.json`));
   if (inst.code !== 0)
     return { lines: [...lines, `installing agentd on ${alias} failed: ${inst.stderr.trim()}`] };
   lines.push(`✓ installed ladvin-agentd ${AGENTD_VERSION}`);
@@ -20305,11 +20314,13 @@ function registerHostTools(server, ctx) {
     description: "Register an SSH host (alias from ~/.ssh/config): checks claude/tmux, installs ladvin-agentd, connects. The host needs key-based SSH and a logged-in claude.",
     inputSchema: {
       alias: stringType(),
-      max_preset: Preset.optional().describe("Highest preset agents on this host may use (default worker; yolo skips all permission checks)")
+      max_preset: Preset.optional().describe("Highest preset agents on this host may use (default worker; yolo skips all permission checks)"),
+      claude_path: stringType().optional().describe("Full path of claude on the host, if ladvin cannot find it")
     }
   }, guarded(async (a) => {
     const r = await addHost(a.alias, {
       maxPreset: a.max_preset,
+      claudePath: a.claude_path,
       transport: pool.transport(a.alias),
       connection: pool.get(a.alias),
       fetchBinary: ctx.fetchBinary
@@ -20400,7 +20411,7 @@ function scpArgs(alias, dir, localPath, remotePath) {
   return { cwd: dirOf, args: dir === "upload" ? [local, remote] : [remote, local] };
 }
 function sshBase() {
-  const args = ["-o", "BatchMode=yes", "-o", "ServerAliveInterval=30"];
+  const args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30"];
   if (process.env.LADVIN_SSH_CONFIG)
     args.unshift("-F", process.env.LADVIN_SSH_CONFIG);
   if (process.platform !== "win32") {

@@ -221,17 +221,16 @@ export function registerDelegateTools(server: McpServer, ctx: ToolCtx): void {
     "ladvin_stop_all",
     { description: "Kill switch: cancel every running ladvin agent on every registered host (all projects).", inputSchema: {} },
     guarded(async () => {
-      const lines: string[] = [];
+      // All hosts at once: one dead host must not stall the kill switch.
+      const hosts = loadHosts();
+      const results = await Promise.allSettled(hosts.map((h) => pool.get(h.alias).call<{ cancelled: number }>("task.cancelAll", {})));
       let total = 0;
-      for (const h of loadHosts()) {
-        try {
-          const { cancelled } = await pool.get(h.alias).call<{ cancelled: number }>("task.cancelAll", {});
-          total += cancelled;
-          lines.push(`${h.alias}: ${cancelled} cancelled`);
-        } catch (e) {
-          lines.push(`${h.alias}: unreachable (${e instanceof Error ? e.message : e})`);
-        }
-      }
+      const lines = results.map((r, i) => {
+        const alias = hosts[i]!.alias;
+        if (r.status === "rejected") return `${alias}: unreachable (${r.reason instanceof Error ? r.reason.message : r.reason})`;
+        total += r.value.cancelled;
+        return `${alias}: ${r.value.cancelled} cancelled`;
+      });
       return ok(`Cancelled ${total} agent(s).\n${lines.join("\n")}`);
     }),
   );

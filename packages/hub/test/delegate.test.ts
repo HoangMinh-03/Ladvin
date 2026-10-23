@@ -30,7 +30,11 @@ let env: Record<string, string> = {};
 async function hub(owner: Owner = { machineId: "m1", projectDir: project }): Promise<Client> {
   const h = createHub({
     owner,
-    transportFor: () => localTransport({ agentdCmd: [process.execPath, MAIN], userHome: remoteHome, env }),
+    transportFor: (alias) =>
+      alias.startsWith("dead")
+        ? // a host that hangs ~1.5s, then drops the connection
+          localTransport({ agentdCmd: [process.execPath, "-e", "setTimeout(() => {}, 1500)", "--"], userHome: remoteHome })
+        : localTransport({ agentdCmd: [process.execPath, MAIN], userHome: remoteHome, env }),
   });
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
@@ -177,4 +181,14 @@ test("hosts lists reachability and remove_host refuses while agents run", async 
   expect(rm.text).toContain("force");
   expect((await call(c, "ladvin_remove_host", { alias: "local1", force: true })).isError).toBe(false);
   expect((await call(c, "ladvin_hosts")).text).not.toContain("local1");
+}, 40000);
+
+test("stop_all reports every host, including unreachable ones", async () => {
+  for (const alias of ["dead1", "dead2"]) saveHost({ alias, os: "linux", arch: "x64", maxPreset: "worker", agentdVersion: "0.1.0", addedAt: "t" });
+  const c = await hub();
+  const t0 = Date.now();
+  const r = await call(c, "ladvin_stop_all");
+  expect(Date.now() - t0).toBeLessThan(2500); // hosts are contacted in parallel, a dead one cannot stall the kill switch
+  expect(r.text).toContain("local1: 0 cancelled");
+  expect(r.text).toMatch(/dead1: unreachable/);
 }, 40000);

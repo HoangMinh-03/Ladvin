@@ -139,3 +139,17 @@ test("bridge autostarts a server when none is running", async () => {
   const c = await client();
   await c.request("shutdown", {}).catch(() => {});
 }, 20000);
+
+test("agent.attach only accepts files inside the task's working directory", async () => {
+  const c = await client();
+  const { taskId, cwd } = await c.request<{ taskId: string; cwd: string }>("task.prepare", { owner, preset: "worker" });
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  mkdirSync(join(cwd, "sub"), { recursive: true });
+  writeFileSync(join(cwd, "sub", "ok.txt"), "ok");
+  writeFileSync(join(home, "secret.txt"), "secret");
+  expect(await c.request("agent.attach", { taskId, path: "sub/../sub/ok.txt" }).catch((e) => e)).toEqual({});
+  for (const bad of [join(home, "secret.txt"), "../../../secret.txt", "~/secret.txt"])
+    expect(await c.request("agent.attach", { taskId, path: bad }).catch((e) => e)).toMatchObject({ code: -32602 });
+  const t = await c.request<TaskInfo>("task.get", { taskId });
+  expect(t).toBeDefined();
+});
