@@ -121,7 +121,7 @@ function fakePool(pullBatches: () => OutMsg[], opts: { download?: (remote: strin
   const calls: [string, any][] = [];
   const pool = {
     get: () => ({
-      info: { clockOffsetMs: 0, agentdVersion: "0.3.0" },
+      info: { clockOffsetMs: 0, agentdVersion: "0.3.1" },
       call: async (m: string, p: any) => {
         calls.push([m, p]);
         if (m === "team.pull") {

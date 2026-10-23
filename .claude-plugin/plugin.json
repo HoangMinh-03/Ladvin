@@ -1,6 +1,6 @@
 {
   "name": "ladvin",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "ladvin — lazy dev plugin. Let the Claude Code session on your machine delegate work to, and team up with, Claude Code agents on your SSH servers.",
   "author": {
     "name": "ladvin contributors"

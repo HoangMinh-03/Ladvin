@@ -20952,7 +20952,7 @@ function registerBurnTools(server, ctx) {
 import { createHash as createHash3 } from "node:crypto";
 import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync8, writeFileSync as writeFileSync7 } from "node:fs";
 import { join as join8 } from "node:path";
-var AGENTD_VERSION = "0.3.0";
+var AGENTD_VERSION = "0.3.1";
 var RELEASE_REPO = "HoangMinh-03/Ladvin";
 var shq2 = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 function parseUname(out) {
@@ -21384,7 +21384,7 @@ ${store.unread(team.teamId).length} unread message(s); read them with ladvin_tea
 }
 
 // packages/hub/src/hub.ts
-var HUB_VERSION = "0.3.0";
+var HUB_VERSION = "0.3.1";
 function createHub(o) {
   const server = new McpServer({ name: "ladvin", version: HUB_VERSION });
   const pool = new ConnectionPool(o.owner, o.transportFor);
