@@ -42,7 +42,7 @@ function loadIndex(projectDir: string): IndexEntry[] {
   const f = indexFile(projectDir);
   return existsSync(f) ? (JSON.parse(readFileSync(f, "utf8")) as IndexEntry[]) : [];
 }
-function addToIndex(projectDir: string, e: IndexEntry): void {
+export function addToIndex(projectDir: string, e: IndexEntry): void {
   writeFileSync(indexFile(projectDir), JSON.stringify([...loadIndex(projectDir), e], null, 2));
 }
 
@@ -76,7 +76,13 @@ function renderReport(r: Report): string {
   return `Report for ${r.taskId} on ${r.host} (${r.startedAt} → ${r.endedAt}, ${usage}):\n${wrapRemote(r.host, r.taskId, body)}`;
 }
 
-export function registerDelegateTools(server: McpServer, ctx: ToolCtx): void {
+export type TaskLocator = {
+  hostOf(taskId: string): Promise<string>;
+  owned(taskId: string): Promise<{ host: string; task: TaskInfo }>;
+  projectTasks(): Promise<{ host: string; task: TaskInfo }[]>;
+};
+
+export function taskLocator(ctx: Pick<ToolCtx, "owner" | "pool">): TaskLocator {
   const { owner, pool } = ctx;
 
   // This project's index first; otherwise ask every registered host (task started from another project).
@@ -101,6 +107,22 @@ export function registerDelegateTools(server: McpServer, ctx: ToolCtx): void {
       throw new ToolError(`Task ${taskId} belongs to ${task.owner.projectDir}; open Claude Code there to manage it.`);
     return { host, task };
   };
+
+  const projectTasks = async () => {
+    const out: { host: string; task: TaskInfo }[] = [];
+    for (const host of [...new Set(loadIndex(owner.projectDir).map((e) => e.host))]) {
+      const list = await pool.get(host).call<TaskInfo[]>("task.list", { owner }).catch(() => [] as TaskInfo[]);
+      out.push(...list.map((task) => ({ host, task })));
+    }
+    return out;
+  };
+
+  return { hostOf, owned, projectTasks };
+}
+
+export function registerDelegateTools(server: McpServer, ctx: ToolCtx): void {
+  const { owner, pool } = ctx;
+  const { hostOf, owned } = taskLocator(ctx);
 
   server.registerTool(
     "ladvin_delegate",
