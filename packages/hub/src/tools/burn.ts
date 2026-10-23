@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { type AccountRow, type BurnPool, collectBurn, readBurnCache, renderBurn, writeBurnCache } from "../burn/aggregate";
+import { type AccountRow, applyBudgets, type BurnPool, collectBurn, readBurnCache, renderBurn, writeBurnCache } from "../burn/aggregate";
 import { saveBudget } from "../burn/budget";
 import { loadHosts } from "../state";
 import { guarded, ok, ToolError } from "./delegate";
@@ -17,7 +17,8 @@ export async function refreshBurn(pool: BurnPool): Promise<AccountRow[]> {
 // Refuses new work on a host whose account is over budget (spec §10). Uses a snapshot at most 60 s old.
 export function makeBudgetGuard(pool: BurnPool): (alias: string) => Promise<string | null> {
   return async (alias) => {
-    const rows = readBurnCache(60_000) ?? (await refreshBurn(pool));
+    const cached = readBurnCache(60_000);
+    const rows = applyBudgets(cached?.length ? cached : await refreshBurn(pool));
     const row = rows.find((r) => r.hosts.includes(alias));
     if (!row?.over.length) return null;
     return `${row.label} is over its ladvin budget (${row.over.join(", ")}). Wait for the window to reset, or raise it with ladvin_budget({account: "${row.key}", …}) or clear it with ladvin_budget({account: "${row.key}", clear: true}).`;
@@ -60,7 +61,6 @@ export function registerBurnTools(server: McpServer, ctx: { pool: BurnPool }): v
       };
       if (!Object.keys(b).length) throw new ToolError("Give at least one limit, or clear: true.");
       saveBudget(a.account, b);
-      writeBurnCache([]); // force a fresh evaluation on the next check
       return ok(`Budget for ${a.account}: ${JSON.stringify(b)}`);
     }),
   );

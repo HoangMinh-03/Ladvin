@@ -19937,7 +19937,10 @@ function scanTranscripts(root, state, now) {
   for (const f of jsonlFiles(root)) {
     let size;
     try {
-      size = statSync(f).size;
+      const st = statSync(f);
+      if (st.mtimeMs < now - WEEK_MS)
+        continue;
+      size = st.size;
     } catch {
       continue;
     }
@@ -20783,8 +20786,17 @@ function localBurn(userHome) {
   return { account: readAccount(userHome), rateLimit: null, usage: windowSums(scan.events, now), agents: [] };
 }
 var newer = (a, b) => !a ? b : !b ? a : Date.parse(b.observedAt) > Date.parse(a.observedAt) ? b : a;
+function liveWindow(w, now = Date.now()) {
+  return w && w.resetsAt * 1000 > now ? w : undefined;
+}
+function withDeadline(p, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
+    p.then((v) => (clearTimeout(timer), resolve(v)), (e) => (clearTimeout(timer), reject(e)));
+  });
+}
 async function collectBurn(o) {
-  const results = await Promise.allSettled(o.hosts.map((h) => o.pool.get(h.alias).call("burn.get", {}, 1e4)));
+  const results = await Promise.allSettled(o.hosts.map((h) => withDeadline(o.pool.get(h.alias).call("burn.get", {}, 1e4), o.deadlineMs ?? 1e4)));
   const rows = new Map;
   const rowFor = (key, label) => {
     let r = rows.get(key);
@@ -20799,8 +20811,10 @@ async function collectBurn(o) {
     r.agentsRunning += b.agents.filter((a) => a.state === "running" || a.state === "idle").length;
     if (b.rateLimit) {
       const at = b.rateLimit.observedAt;
-      r.fiveHour = newer(r.fiveHour, b.rateLimit.fiveHour && { ...b.rateLimit.fiveHour, observedAt: at });
-      r.sevenDay = newer(r.sevenDay, b.rateLimit.sevenDay && { ...b.rateLimit.sevenDay, observedAt: at });
+      const five = liveWindow(b.rateLimit.fiveHour);
+      const seven = liveWindow(b.rateLimit.sevenDay);
+      r.fiveHour = newer(r.fiveHour, five && { ...five, observedAt: at });
+      r.sevenDay = newer(r.sevenDay, seven && { ...seven, observedAt: at });
     }
   };
   const unreachable = [];
@@ -20821,11 +20835,16 @@ async function collectBurn(o) {
     const r = rowFor("unreachable", "unreachable hosts");
     r.unreachable = unreachable;
   }
-  for (const r of rows.values()) {
+  return applyBudgets([...rows.values()]);
+}
+function applyBudgets(rows) {
+  for (const r of rows) {
+    r.fiveHour = liveWindow(r.fiveHour);
+    r.sevenDay = liveWindow(r.sevenDay);
     const b = budgetFor(r.key);
     r.over = b ? overBudget(r, b) : [];
   }
-  return [...rows.values()];
+  return rows;
 }
 var pct = (u) => `${Math.round(u * 100)}%`;
 function overBudget(row, b) {
@@ -20888,7 +20907,8 @@ async function refreshBurn(pool) {
 }
 function makeBudgetGuard(pool) {
   return async (alias) => {
-    const rows = readBurnCache(60000) ?? await refreshBurn(pool);
+    const cached = readBurnCache(60000);
+    const rows = applyBudgets(cached?.length ? cached : await refreshBurn(pool));
     const row = rows.find((r) => r.hosts.includes(alias));
     if (!row?.over.length)
       return null;
@@ -20924,7 +20944,6 @@ function registerBurnTools(server, ctx) {
     if (!Object.keys(b).length)
       throw new ToolError("Give at least one limit, or clear: true.");
     saveBudget(a.account, b);
-    writeBurnCache([]);
     return ok(`Budget for ${a.account}: ${JSON.stringify(b)}`);
   }));
 }
@@ -21377,11 +21396,6 @@ function createHub(o) {
   registerTeamTools(server, { owner: o.owner, pool, store, poller, budgetGuard });
   registerBurnTools(server, { pool });
   registerAttachTools(server, { owner: o.owner, pool });
-  const burnTimer = setInterval(() => {
-    if (loadHosts().length)
-      refreshBurn(pool).catch(() => {});
-  }, 60000);
-  burnTimer.unref?.();
   if (store.active())
     poller.start();
   return {
@@ -21389,7 +21403,6 @@ function createHub(o) {
     pool,
     poller,
     close() {
-      clearInterval(burnTimer);
       poller.stop();
       pool.closeAll();
     }

@@ -3933,6 +3933,9 @@ function readJson(f) {
     return;
   }
 }
+function liveWindow(w, now = Date.now()) {
+  return w && w.resetsAt * 1000 > now ? w : undefined;
+}
 var burnCacheFile = () => join2(ladvinHome(), "burn-cache.json");
 function readBurnCache(maxAgeMs) {
   const c = readJson(burnCacheFile());
@@ -3947,7 +3950,10 @@ function statusLine(rows) {
   if (!real?.length)
     return "";
   const r = [...real].sort((a, b) => b.agentsRunning - a.agentsRunning)[0];
-  const p = (w) => w ? `${Math.round(w.utilization * 100)}%` : "—";
+  const p = (w) => {
+    const live = liveWindow(w);
+    return live ? `${Math.round(live.utilization * 100)}%` : "—";
+  };
   return `ladvin ⚡ ${r.label} 5h ${p(r.fiveHour)} · 7d ${p(r.sevenDay)} · ${r.agentsRunning} running${r.over.length ? " · ⚠ over budget" : ""}`;
 }
 process.stdin.resume();

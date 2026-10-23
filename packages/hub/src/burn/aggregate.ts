@@ -67,8 +67,23 @@ function localBurn(userHome: string): BurnGetResult {
 const newer = (a: ObservedWindow | undefined, b: ObservedWindow | undefined) =>
   !a ? b : !b ? a : Date.parse(b.observedAt) > Date.parse(a.observedAt) ? b : a;
 
-export async function collectBurn(o: { pool: BurnPool; hosts: HostConfig[]; local: { userHome: string } }): Promise<AccountRow[]> {
-  const results = await Promise.allSettled(o.hosts.map((h) => o.pool.get(h.alias).call<BurnGetResult>("burn.get", {}, 10_000)));
+// A window whose reset time has passed says nothing about now: treat it as unobserved (no stale lockouts).
+export function liveWindow<W extends RateWindow>(w: W | undefined, now = Date.now()): W | undefined {
+  return w && w.resetsAt * 1000 > now ? w : undefined;
+}
+
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
+    p.then((v) => (clearTimeout(timer), resolve(v)), (e) => (clearTimeout(timer), reject(e)));
+  });
+}
+
+export async function collectBurn(o: { pool: BurnPool; hosts: HostConfig[]; local: { userHome: string }; deadlineMs?: number }): Promise<AccountRow[]> {
+  // The deadline covers connecting too, so one dead host cannot stall a delegate to a healthy one.
+  const results = await Promise.allSettled(
+    o.hosts.map((h) => withDeadline(o.pool.get(h.alias).call<BurnGetResult>("burn.get", {}, 10_000), o.deadlineMs ?? 10_000)),
+  );
   const rows = new Map<string, AccountRow>();
   const rowFor = (key: string, label: string): AccountRow => {
     let r = rows.get(key);
@@ -86,8 +101,10 @@ export async function collectBurn(o: { pool: BurnPool; hosts: HostConfig[]; loca
     r.agentsRunning += b.agents.filter((a) => a.state === "running" || a.state === "idle").length;
     if (b.rateLimit) {
       const at = b.rateLimit.observedAt;
-      r.fiveHour = newer(r.fiveHour, b.rateLimit.fiveHour && { ...b.rateLimit.fiveHour, observedAt: at });
-      r.sevenDay = newer(r.sevenDay, b.rateLimit.sevenDay && { ...b.rateLimit.sevenDay, observedAt: at });
+      const five = liveWindow(b.rateLimit.fiveHour);
+      const seven = liveWindow(b.rateLimit.sevenDay);
+      r.fiveHour = newer(r.fiveHour, five && { ...five, observedAt: at });
+      r.sevenDay = newer(r.sevenDay, seven && { ...seven, observedAt: at });
     }
   };
   const unreachable: string[] = [];
@@ -111,11 +128,18 @@ export async function collectBurn(o: { pool: BurnPool; hosts: HostConfig[]; loca
     const r = rowFor("unreachable", "unreachable hosts");
     r.unreachable = unreachable;
   }
-  for (const r of rows.values()) {
+  return applyBudgets([...rows.values()]);
+}
+
+// Budgets are re-read on every evaluation, so a change applies immediately even to a cached snapshot.
+export function applyBudgets(rows: AccountRow[]): AccountRow[] {
+  for (const r of rows) {
+    r.fiveHour = liveWindow(r.fiveHour);
+    r.sevenDay = liveWindow(r.sevenDay);
     const b = budgetFor(r.key);
     r.over = b ? overBudget(r, b) : [];
   }
-  return [...rows.values()];
+  return rows;
 }
 
 const pct = (u: number) => `${Math.round(u * 100)}%`;

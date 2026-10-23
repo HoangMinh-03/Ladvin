@@ -69,3 +69,14 @@ test("readAccount returns only identity fields, never credentials", () => {
   expect(readAccount(root)).toEqual({ accountUuid: "u-1", email: "a@b.c", name: "A" });
   expect(readAccount(join(root, "nope"))).toBeNull();
 });
+
+test("files untouched for more than 7 days are skipped without reading or remembering them", () => {
+  const { utimesSync } = require("node:fs");
+  const f = join(projects(), "a", "old.jsonl");
+  writeFileSync(f, line("fresh-looking", NOW - 1000));
+  const old = (NOW - 8 * 86400_000) / 1000;
+  utimesSync(f, old, old);
+  const s = scanTranscripts(projects(), fresh(), NOW);
+  expect(s.events).toHaveLength(0);
+  expect(Object.keys(s.files)).toHaveLength(0);
+});

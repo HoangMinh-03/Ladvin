@@ -3,9 +3,8 @@ import type { Owner } from "@ladvin/protocol";
 import { ConnectionPool } from "./connection";
 import { TeamPoller } from "./team/poller";
 import { TeamStore } from "./team/store";
-import { loadHosts } from "./state";
 import { registerAttachTools } from "./tools/attach";
-import { makeBudgetGuard, refreshBurn, registerBurnTools } from "./tools/burn";
+import { makeBudgetGuard, registerBurnTools } from "./tools/burn";
 import { registerDelegateTools } from "./tools/delegate";
 import { registerHostTools } from "./tools/hosts";
 import { registerTeamTools } from "./tools/team";
@@ -26,11 +25,6 @@ export function createHub(o: { owner: Owner; transportFor: (alias: string) => Tr
   registerTeamTools(server, { owner: o.owner, pool, store, poller, budgetGuard });
   registerBurnTools(server, { pool });
   registerAttachTools(server, { owner: o.owner, pool });
-  // Keeps the statusline cache fresh while hosts are registered.
-  const burnTimer = setInterval(() => {
-    if (loadHosts().length) void refreshBurn(pool).catch(() => {});
-  }, 60_000);
-  burnTimer.unref?.();
   // A team left active by a previous session keeps receiving messages (hooks read them from disk).
   if (store.active()) poller.start();
   return {
@@ -38,7 +32,6 @@ export function createHub(o: { owner: Owner; transportFor: (alias: string) => Tr
     pool,
     poller,
     close() {
-      clearInterval(burnTimer);
       poller.stop();
       pool.closeAll();
     },

@@ -73,7 +73,7 @@ Remote agents run headless, so they can't ask for permission. Each agent runs un
 
 Set a budget with `ladvin_budget({account, five_hour_pct?, seven_day_pct?, five_hour_tokens?, seven_day_tokens?})`. The account key comes from `ladvin_burn`; use `*` for all accounts. While an account is over budget, new delegations and teams on its hosts are refused.
 
-**Statusline:** point Claude Code's `statusLine` at the bundled script for a one-line view (`ladvin ⚡ you@example.com 5h 23% · 7d 4% · 2 running`):
+**Statusline:** the line shows the last snapshot (refreshed whenever ladvin checks budgets or you run `/ladvin:burn`; hidden after 10 minutes). Point Claude Code's `statusLine` at the bundled script for a one-line view (`ladvin ⚡ you@example.com 5h 23% · 7d 4% · 2 running`):
 
 ```json
 { "statusLine": { "type": "command", "command": "node <plugin dir>/dist/ladvin-statusline.js" } }

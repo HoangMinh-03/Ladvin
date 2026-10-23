@@ -10,7 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4 # same bundler as the committed dist/
       - run: bun install --frozen-lockfile
+      - name: tag matches the version add-host downloads
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          grep -q "AGENTD_VERSION = \"$v\"" packages/hub/src/setup/add-host.ts || { echo "tag $GITHUB_REF_NAME does not match AGENTD_VERSION"; exit 1; }
+          grep -q "\"version\": \"$v\"" .claude-plugin/plugin.json || { echo "tag $GITHUB_REF_NAME does not match plugin.json"; exit 1; }
       - run: bun test packages
       - run: bun scripts/build-agentd.ts --out dist-bin
       - name: publish release with agentd binaries and SHA256SUMS

@@ -48,13 +48,15 @@ const fakePool = (byAlias: Record<string, BurnGetResult | Error>) =>
     }),
   }) as any;
 
+// windows that have not reset yet (epoch seconds)
+const FUTURE = Math.floor(Date.now() / 1000) + 3600;
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
 test("hosts on one account become one row; the newest observed window wins", async () => {
   const rows = await collectBurn({
     pool: fakePool({
-      a: result({ rateLimit: { fiveHour: { utilization: 0.3, resetsAt: 1 }, observedAt: minutesAgo(30) } }),
-      b: result({ rateLimit: { fiveHour: { utilization: 0.42, resetsAt: 2 }, sevenDay: { utilization: 0.05, resetsAt: 3 }, observedAt: minutesAgo(2) } }),
+      a: result({ rateLimit: { fiveHour: { utilization: 0.3, resetsAt: FUTURE }, observedAt: minutesAgo(30) } }),
+      b: result({ rateLimit: { fiveHour: { utilization: 0.42, resetsAt: FUTURE }, sevenDay: { utilization: 0.05, resetsAt: FUTURE }, observedAt: minutesAgo(2) } }),
     }),
     hosts: [host("a"), host("b")],
     local: { userHome },
@@ -80,7 +82,7 @@ test("unknown account, unreachable host, and the local machine", async () => {
 
 test("render shows observed utilization with its age, '—' when unknown, cache reads apart", async () => {
   const rows = await collectBurn({
-    pool: fakePool({ a: result({ rateLimit: { fiveHour: { utilization: 0.42, resetsAt: 2 }, observedAt: minutesAgo(3) } }), x: result({ account: null }) }),
+    pool: fakePool({ a: result({ rateLimit: { fiveHour: { utilization: 0.42, resetsAt: FUTURE }, observedAt: minutesAgo(3) } }), x: result({ account: null }) }),
     hosts: [host("a"), host("x")],
     local: { userHome },
   });
@@ -94,7 +96,7 @@ test("render shows observed utilization with its age, '—' when unknown, cache 
 test("budgets: utilization and billable tokens", async () => {
   const [row] = (
     await collectBurn({
-      pool: fakePool({ a: result({ rateLimit: { fiveHour: { utilization: 0.42, resetsAt: 2 }, observedAt: minutesAgo(1) } }) }),
+      pool: fakePool({ a: result({ rateLimit: { fiveHour: { utilization: 0.42, resetsAt: FUTURE }, observedAt: minutesAgo(1) } }) }),
       hosts: [host("a")],
       local: { userHome },
     })
@@ -138,10 +140,50 @@ test("statusline prints the busiest account from a fresh cache, nothing when sta
   const run = () =>
     spawnSync("node", [join(ROOT, "dist", "ladvin-statusline.js")], { input: "{}", env: { ...process.env, LADVIN_HOME: home }, encoding: "utf8" }).stdout;
   expect(run()).toBe("");
-  const row = { key: "acc-1", label: "dev@example.com", hosts: ["a"], includesLocal: false, fiveHour: { utilization: 0.23, resetsAt: 1, observedAt: minutesAgo(1) }, sevenDay: { utilization: 0.04, resetsAt: 1, observedAt: minutesAgo(1) }, last5h: ZERO, last7d: ZERO, billablePerMin15: 0, agentsRunning: 2, unreachable: [], over: [] };
+  const row = { key: "acc-1", label: "dev@example.com", hosts: ["a"], includesLocal: false, fiveHour: { utilization: 0.23, resetsAt: FUTURE, observedAt: minutesAgo(1) }, sevenDay: { utilization: 0.04, resetsAt: FUTURE, observedAt: minutesAgo(1) }, last5h: ZERO, last7d: ZERO, billablePerMin15: 0, agentsRunning: 2, unreachable: [], over: [] };
   mkdirSync(home, { recursive: true });
   writeFileSync(join(home, "burn-cache.json"), JSON.stringify({ at: new Date().toISOString(), rows: [row] }));
   expect(run()).toContain("5h 23% · 7d 4% · 2 running");
   writeFileSync(join(home, "burn-cache.json"), JSON.stringify({ at: minutesAgo(30), rows: [row] }));
   expect(run()).toBe("");
 }, 60000);
+
+// ---- review fixes ----
+test("an observed window that has already reset counts as unobserved (no permanent lockout)", async () => {
+  const past = Math.floor(Date.now() / 1000) - 60;
+  const [row] = (
+    await collectBurn({
+      pool: fakePool({ a: result({ rateLimit: { fiveHour: { utilization: 0.95, resetsAt: past }, observedAt: minutesAgo(400) } }) }),
+      hosts: [host("a")],
+      local: { userHome },
+    })
+  ).filter((r) => r.key === "acc-1");
+  expect(row!.fiveHour).toBeUndefined();
+  expect(overBudget(row!, { fiveHourPct: 90 })).toEqual([]);
+  expect(renderBurn([row!])).toContain("5h —");
+});
+
+test("budget changes apply immediately, even with a fresh cached snapshot", async () => {
+  const { makeBudgetGuard } = await import("../src/tools/burn");
+  saveHost(host("a"));
+  process.env.LADVIN_USER_HOME = userHome;
+  try {
+    const pool = fakePool({ a: result() }); // billable 5h = 35
+    const guard = makeBudgetGuard(pool);
+    expect(await guard("a")).toBeNull(); // caches rows
+    saveBudget("acc-1", { fiveHourTokens: 10 });
+    expect(await guard("a")).toContain("over its ladvin budget");
+    saveBudget("acc-1", null);
+    expect(await guard("a")).toBeNull();
+  } finally {
+    delete process.env.LADVIN_USER_HOME;
+  }
+});
+
+test("a host that never answers cannot stall collection past the deadline", async () => {
+  const pool = { get: () => ({ call: () => new Promise(() => {}) }) } as any;
+  const t0 = Date.now();
+  const rows = await collectBurn({ pool, hosts: [host("hang")], local: { userHome }, deadlineMs: 300 });
+  expect(Date.now() - t0).toBeLessThan(2000);
+  expect(rows.some((r) => r.unreachable.includes("hang"))).toBe(true);
+});

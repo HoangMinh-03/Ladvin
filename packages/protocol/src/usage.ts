@@ -42,7 +42,10 @@ export function scanTranscripts(root: string, state: ScanState, now: number): Sc
   for (const f of jsonlFiles(root)) {
     let size: number;
     try {
-      size = statSync(f).size;
+      const st = statSync(f);
+      // Untouched for a week: nothing in it can fall inside the windows; skip without reading or remembering it.
+      if (st.mtimeMs < now - WEEK_MS) continue;
+      size = st.size;
     } catch {
       continue;
     }
