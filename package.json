@@ -6,10 +6,12 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "test": "bun test packages",
+    "test:e2e": "bun test ./test/e2e --timeout 600000",
     "build:hub": "bun build packages/hub/src/main.ts --target=node --outfile dist/ladvin-mcp.js",
     "build:agentd": "bun build --compile packages/agentd/src/main.ts --outfile build/ladvin-agentd"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
     "@types/bun": "latest",
     "typescript": "^5.6.0"
   }

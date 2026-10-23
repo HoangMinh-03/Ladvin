@@ -1,5 +1,5 @@
 // Scripted stand-in for `claude -p --input-format stream-json --output-format stream-json`.
-// Script: env FAKE_CLAUDE_SCRIPT (first run) / FAKE_CLAUDE_SCRIPT_RESUME (runs with --resume): JSON array of steps.
+// Script: env FAKE_CLAUDE_SCRIPT, else ~/.fake-claude-script.json (first run) / FAKE_CLAUDE_SCRIPT_RESUME (runs with --resume): JSON array of steps.
 //   {emit: object}                         print one JSON line (session_id added)
 //   {say: string}                          emit an assistant text event
 //   {result: string, isError?: boolean}    emit a result event with fixed usage
@@ -11,14 +11,25 @@
 //   {exit: number}
 // After the script: stays alive until stdin closes, then exits 0 (like real claude).
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const argv = process.argv.slice(2);
+// One-shot mode (`claude -p "prompt"`, used by add-host as a login probe): answer and exit.
+if (!argv.includes("--input-format")) {
+  console.log("ok");
+  process.exit(0);
+}
 const resume = argv.includes("--resume") ? argv[argv.indexOf("--resume") + 1] : undefined;
 const sessionId = resume ?? `fake-${process.pid}`;
-const raw = (resume && process.env.FAKE_CLAUDE_SCRIPT_RESUME) || process.env.FAKE_CLAUDE_SCRIPT;
+const scriptFile = join(homedir(), ".fake-claude-script.json");
+const raw =
+  (resume && process.env.FAKE_CLAUDE_SCRIPT_RESUME) ||
+  process.env.FAKE_CLAUDE_SCRIPT ||
+  (existsSync(scriptFile) ? readFileSync(scriptFile, "utf8") : undefined);
 const script: any[] = raw ? JSON.parse(raw) : [{ say: "working" }, { result: "default done" }];
 
 const out = (o: object) => process.stdout.write(JSON.stringify({ ...o, session_id: sessionId }) + "\n");

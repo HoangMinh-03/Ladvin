@@ -60,8 +60,15 @@ function sshBase(): string[] {
 export function sshTransport(alias: string): Transport {
   return {
     spawnBridge: () => spawn("ssh", [...sshBase(), "-T", alias, `${REMOTE_AGENTD} bridge`], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true }),
-    exec: (cmd, timeoutMs = 60_000) => run("ssh", [...sshBase(), alias, cmd], { timeoutMs }),
+    exec: (cmd, timeoutMs = 60_000) => run("ssh", [...sshBase(), "-n", alias, cmd], { timeoutMs }),
     upload: async (localPath, remotePath) => {
+      // scp does not create directories.
+      const rel = homeRelative(remotePath);
+      const dir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+      if (dir) {
+        const mk = await run("ssh", [...sshBase(), "-n", alias, `mkdir -p ${shq(dir)}`]);
+        if (mk.code !== 0) throw new Error(`upload to ${alias} failed: ${mk.stderr.trim()}`);
+      }
       const { cwd, args } = scpArgs(alias, "upload", resolve(localPath), remotePath);
       const r = await run("scp", [...sshBase(), "-q", ...args], { cwd });
       if (r.code !== 0) throw new Error(`upload to ${alias} failed: ${r.stderr.trim()}`);
